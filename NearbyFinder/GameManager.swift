@@ -77,6 +77,12 @@ final class GameManager: ObservableObject {
         nearby.start()
     }
 
+    /// タイトル画面へ戻るとき、ゲーム状態をリセットして通信を止める
+    func stop() {
+        resetToLobby()
+        nearby.stop()
+    }
+
     // MARK: - UI からの操作
 
     func selectRole(_ selected: PlayerRole) {

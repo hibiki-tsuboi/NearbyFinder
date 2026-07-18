@@ -60,9 +60,11 @@ final class MultipeerSession: NSObject {
         startRetryLoop()
     }
 
+    /// 通信を止める。次の start() で再開できるよう、新しいトランスポートを組み直しておく
+    /// （tearDown 済みの advertiser/browser は delegate が外れていて再利用できない）
     func stop() {
         retryTask?.cancel()
-        tearDownTransport()
+        resetTransport()
     }
 
     func send(_ data: Data) {
@@ -113,8 +115,8 @@ final class MultipeerSession: NSObject {
         session.disconnect()
     }
 
-    /// 接続失敗が続いたときに、新しい PeerID でトランスポート一式を作り直す
-    private func rebuildTransport() {
+    /// 現在の接続を破棄し、新しい PeerID でトランスポート一式を作り直す（探索は始めない）
+    private func resetTransport() {
         tearDownTransport()
         let transport = Self.makeTransport()
         myPeerID = transport.peerID
@@ -124,6 +126,11 @@ final class MultipeerSession: NSObject {
         wireDelegates()
         discovered.removeAll()
         consecutiveFailures = 0
+    }
+
+    /// 接続失敗が続いたときに、新しい PeerID でトランスポート一式を作り直す
+    private func rebuildTransport() {
+        resetTransport()
         advertiser.startAdvertisingPeer()
         browser.startBrowsingForPeers()
         lastDiscoveryRefresh = Date()

@@ -95,6 +95,28 @@ final class NearbySessionManager: NSObject, ObservableObject {
         watchRelay.updateGameState(state)
     }
 
+    /// タイトル画面へ戻るときに通信を全て止める。start() で再開できる
+    func stop() {
+        searchHintTask?.cancel()
+        multipeer.stop()
+        niSession?.invalidate()
+        niSession = nil
+        watchPeerSession?.invalidate()
+        watchPeerSession = nil
+        arSession.pause()
+        isPeerConnected = false
+        peerName = nil
+        distance = nil
+        direction = nil
+        horizontalAngle = nil
+        directionHint = nil
+        peerWorldTransform = nil
+        note = nil
+        if status != .unsupported && status != .denied {
+            status = .searching
+        }
+    }
+
     /// アプリがフォアグラウンドへ戻ったときなどに、未接続なら探索をやり直す
     func refreshDiscoveryIfNeeded() {
         guard status == .searching else { return }
@@ -371,6 +393,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
     var isDeviceSupported: Bool { false }
 
     func start() {}
+    func stop() {}
     func send(_ message: GameMessage) {}
     func refreshDiscoveryIfNeeded() {}
     func relayGameStateToWatch(phase: String, role: String?, deadline: Date?, outcome: String?) {}

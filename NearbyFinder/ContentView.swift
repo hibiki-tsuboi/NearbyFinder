@@ -19,7 +19,7 @@ struct ContentView: View {
             } else {
                 switch game.phase {
                 case .lobby:
-                    LobbyView(game: game)
+                    LobbyView(game: game, onBackToTitle: backToTitle)
                 case .hiding:
                     HidingView(game: game)
                 case .hunting:
@@ -50,6 +50,14 @@ struct ContentView: View {
         UIApplication.shared.isIdleTimerDisabled = true
         #endif
         hasStarted = true
+    }
+
+    private func backToTitle() {
+        game.stop()
+        #if os(iOS)
+        UIApplication.shared.isIdleTimerDisabled = false
+        #endif
+        hasStarted = false
     }
 }
 
@@ -223,11 +231,21 @@ struct HowToPlayView: View {
 
 struct LobbyView: View {
     @ObservedObject var game: GameManager
+    let onBackToTitle: () -> Void
 
     private var isReady: Bool { game.nearby.status == .ranging }
 
     var body: some View {
         VStack(spacing: 12) {
+            HStack {
+                Button {
+                    onBackToTitle()
+                } label: {
+                    Label("タイトルへ", systemImage: "chevron.left")
+                        .font(.subheadline)
+                }
+                Spacer()
+            }
             Spacer()
             Image(systemName: "sparkle.magnifyingglass")
                 .font(.system(size: 56))
