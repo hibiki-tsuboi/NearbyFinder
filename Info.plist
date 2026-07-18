@@ -8,6 +8,8 @@
 	<string>近くの iPhone を見つけてペアリングするためにローカルネットワークを使用します。</string>
 	<key>NSCameraUsageDescription</key>
 	<string>方向表示の精度を上げるためにカメラを使用します。映像が保存・送信されることはありません。</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_nearbyfinder._tcp</string>

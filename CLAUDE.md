@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-NearbyFinder is an iPhone treasure-hunt app built on Nearby Interaction (UWB): one iPhone is hidden, the other finds it using live distance/direction readings. The Xcode project is multiplatform (iOS, macOS, visionOS), but Nearby Interaction only works on iOS — other platforms compile against a stub and show an "unsupported" UI. Real functionality requires two physical UWB-capable iPhones (iPhone 11+, not SE); Xcode can also simulate NI between two booted simulators.
+NearbyFinder is an iPhone treasure-hunt app built on Nearby Interaction (UWB): one iPhone is hidden, the other finds it using live distance/direction readings. Real functionality requires two physical UWB-capable iPhones (iPhone 11+, not SE); Xcode can also simulate NI between two booted simulators.
 
-- Xcode project: `NearbyFinder.xcodeproj`, targets `NearbyFinder` (iOS/macOS/visionOS app) and `NearbyFinderWatch` (watchOS companion, embedded into the iOS app with `platformFilter = ios` so macOS/visionOS builds skip it)
-- Deployment target: iOS/macOS/watchOS 26.5; bundle IDs `jp.hibiki.NearbyFinder` / `.watchkitapp`
+- Xcode project: `NearbyFinder.xcodeproj`, targets `NearbyFinder` (iPhone-only: `SUPPORTED_PLATFORMS = iphoneos iphonesimulator`, `TARGETED_DEVICE_FAMILY = 1` — deliberately restricted for release since iPad/Mac/Vision have no UWB) and `NearbyFinderWatch` (watchOS companion, embedded with `platformFilter = ios`)
+- Deployment target: iOS/watchOS 26.5; bundle IDs `jp.hibiki.NearbyFinder` / `.watchkitapp`
+- The `#if os(iOS)` / `#else` stubs in the managers predate the platform restriction; they are dead code on the only remaining platform but kept as guards. Note `canImport(NearbyInteraction)` is NOT a sufficient platform check — the module imports on macOS with unavailable APIs.
 - No test targets yet. No Swift Package dependencies.
 
 ## Commands
@@ -18,8 +19,6 @@ Build for iOS Simulator (Debug):
 xcodebuild -project NearbyFinder.xcodeproj -scheme NearbyFinder \
   -destination 'platform=iOS Simulator,name=iPhone 17' build
 ```
-
-Compile-check macOS: same command with `-destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`.
 
 Build the watch app alone: `-scheme NearbyFinderWatch -destination 'generic/platform=watchOS Simulator'`.
 

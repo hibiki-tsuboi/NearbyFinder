@@ -25,7 +25,7 @@ iPhone 2 台で遊ぶ宝探しゲームです。片方の iPhone を「宝」と
 - 両方のアプリがフォアグラウンドにあること（バックグラウンドに回ると NI セッションが一時停止します）
 - （任意）Apple Watch — ハンター側の手元に距離を表示（watchOS の NI は距離のみで方向は取得できません）
 
-Xcode プロジェクトはマルチプラットフォーム（iOS / macOS / visionOS）ですが、Nearby Interaction は iOS でのみ動作します。他プラットフォームはスタブに対してコンパイルされ、「非対応」画面が表示されます。Xcode では、起動済みシミュレータ 2 台の間で NI をシミュレートすることもできます。
+アプリは iPhone 専用です（iPad・Mac・Vision Pro は UWB 非搭載のため対象外にしています）。Xcode では、起動済みシミュレータ 2 台の間で NI をシミュレートすることもできます。
 
 ## ビルド
 
@@ -34,7 +34,6 @@ xcodebuild -project NearbyFinder.xcodeproj -scheme NearbyFinder \
   -destination 'platform=iOS Simulator,name=iPhone 17' build
 ```
 
-- macOS のコンパイル確認: `-destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`
 - Watch アプリ単体: `-scheme NearbyFinderWatch -destination 'generic/platform=watchOS Simulator'`
 
 外部依存（Swift Package）はありません。
@@ -65,7 +64,7 @@ xcodebuild -project NearbyFinder.xcodeproj -scheme NearbyFinder \
 ## プロジェクト構成
 
 ```
-NearbyFinder/            iOS アプリ本体（macOS/visionOS はスタブ）
+NearbyFinder/            iOS アプリ本体（iPhone 専用）
 NearbyFinderWatch/       watchOS コンパニオンアプリ
 Info.plist               NSBonjourServices など INFOPLIST_KEY_* で表現できないキー
 NearbyFinder.xcodeproj
