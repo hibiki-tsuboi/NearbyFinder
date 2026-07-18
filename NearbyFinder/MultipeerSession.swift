@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import os
 import MultipeerConnectivity
 #if canImport(UIKit)
 import UIKit
@@ -41,6 +42,14 @@ final class MultipeerSession: NSObject {
     private var consecutiveFailures = 0
     private var lastDiscoveryRefresh = Date()
 
+    /// 生存確認の ping（1 バイト。JSON の GameMessage と衝突しない値）
+    private static let pingData = Data([0x00])
+    /// 相手から最後に何か受信した時刻。keepalive の死活判定に使う
+    private var lastReceiveAt = Date()
+    private var keepaliveTask: Task<Void, Never>?
+
+    private let log = Logger(subsystem: "jp.hibiki.NearbyFinder", category: "mc")
+
     /// 非招待側が招待を始めるまでの猶予
     private static let inviteGracePeriod: TimeInterval = 6
     /// 招待の返答待ちタイムアウト
@@ -69,7 +78,32 @@ final class MultipeerSession: NSObject {
     /// （tearDown 済みの advertiser/browser は delegate が外れていて再利用できない）
     func stop() {
         retryTask?.cancel()
+        keepaliveTask?.cancel()
         resetTransport()
+    }
+
+    /// MC は片側だけが切断済みの「半開き」状態に陥ることがある。こちらは接続済みの
+    /// つもりで相手の招待を拒否し続け、相手は永遠に繋がれない（作り直し側の切断通知が
+    /// 届き損ねたときに起きる）。接続中は互いに ping を送り合い、一定時間何も受信
+    /// できなければ死んだ接続として自ら切断し、通常の再接続サイクルに戻す。
+    private func startKeepalive() {
+        keepaliveTask?.cancel()
+        lastReceiveAt = Date()
+        keepaliveTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, !Task.isCancelled else { return }
+                let peers = self.session.connectedPeers
+                guard !peers.isEmpty else { return }
+                try? self.session.send(Self.pingData, toPeers: peers, with: .reliable)
+                let silence = Date().timeIntervalSince(self.lastReceiveAt)
+                if silence > 15 {
+                    self.log.warning("keepalive: \(Int(silence)) 秒無受信。半開き接続とみなして切断する")
+                    self.session.disconnect()
+                    return
+                }
+            }
+        }
     }
 
     func send(_ data: Data) {
@@ -133,6 +167,8 @@ final class MultipeerSession: NSObject {
         discovered.removeAll()
         pendingInvites.removeAll()
         consecutiveFailures = 0
+        keepaliveTask?.cancel()
+        log.info("トランスポートを作り直した（新 peerID: \(self.myPeerID.displayName)）")
     }
 
     /// 接続失敗が続いたときに、新しい PeerID でトランスポート一式を作り直す
@@ -195,14 +231,21 @@ extension MultipeerSession: MCSessionDelegate {
         Task { @MainActor in
             switch state {
             case .connecting:
+                self.log.info("state: connecting \(peerID.displayName)")
                 self.onPeerConnecting?(peerID)
             case .connected:
+                self.log.info("state: connected \(peerID.displayName)")
                 self.consecutiveFailures = 0
                 self.pendingInvites.removeValue(forKey: peerID)
+                self.startKeepalive()
                 self.onPeerConnected?(peerID)
             case .notConnected:
+                self.log.warning("state: notConnected \(peerID.displayName)")
                 // 失敗が確定したので、次のリトライで即座に再招待できるようにする
                 self.pendingInvites.removeValue(forKey: peerID)
+                if self.session.connectedPeers.isEmpty {
+                    self.keepaliveTask?.cancel()
+                }
                 self.onPeerDisconnected?(peerID)
                 // 接続の試行失敗が続くときは MC の内部状態が壊れている可能性があるため作り直す
                 if self.session.connectedPeers.isEmpty {
@@ -219,6 +262,9 @@ extension MultipeerSession: MCSessionDelegate {
 
     nonisolated func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
         Task { @MainActor in
+            self.lastReceiveAt = Date()
+            // keepalive の ping は上位層へ渡さない
+            guard data != Self.pingData else { return }
             self.onDataReceived?(data, peerID)
         }
     }
@@ -232,8 +278,10 @@ extension MultipeerSession: MCSessionDelegate {
 extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
     nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
         Task { @MainActor in
-            // 接続済みのときは受けない（二重セッション防止）
+            // 接続済みのときは受けない（二重セッション防止）。半開きで拒否し続ける
+            // 状態は keepalive が接続を切って解消する
             let accept = self.session.connectedPeers.isEmpty
+            self.log.info("招待受信: \(peerID.displayName) → \(accept ? "受諾" : "拒否（接続済みのため）")")
             invitationHandler(accept, accept ? self.session : nil)
         }
     }
