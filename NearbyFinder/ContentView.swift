@@ -21,7 +21,11 @@ struct ContentView: View {
                 case .lobby:
                     LobbyView(game: game, onBackToTitle: backToTitle)
                 case .hiding:
-                    HidingView(game: game)
+                    if game.isRevealingRole {
+                        RoleRevealView(game: game)
+                    } else {
+                        HidingView(game: game)
+                    }
                 case .hunting:
                     if game.role == .hunter {
                         HuntingView(game: game)
@@ -34,6 +38,7 @@ struct ContentView: View {
             }
         }
         .animation(.default, value: game.phase)
+        .animation(.default, value: game.isRevealingRole)
         .animation(.default, value: hasStarted)
         .onChange(of: scenePhase) { _, newPhase in
             // バックグラウンドから戻ったとき、MC の探索が固まっていることがあるためやり直す
@@ -261,6 +266,12 @@ struct LobbyView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 8)
             roleButtons
+            if isReady {
+                Text("どちらかが選ぶと、両方の端末でゲームが始まるよ")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
             if !isReady {
                 Text("もう1台の iPhone でもアプリを開くと役割を選べます")
                     .font(.footnote)
@@ -387,6 +398,44 @@ struct GameSettingsSection: View {
             get: { game.huntDuration },
             set: { game.updateSettings(hideDuration: game.hideDuration, huntDuration: $0) }
         )
+    }
+}
+
+// MARK: - 役割の発表
+
+/// 役割が決まった瞬間に両端末で挟む発表演出（hiding の先頭約 2 秒）。
+/// 相手のタップで始まった側が「知らないうちに始まっていた」と感じないための緩衝でもある
+struct RoleRevealView: View {
+    @ObservedObject var game: GameManager
+
+    @State private var appeared = false
+
+    private var isTreasure: Bool { game.role == .treasure }
+
+    var body: some View {
+        ZStack {
+            (isTreasure ? Color(hue: 0.58, saturation: 0.75, brightness: 0.5)
+                        : Color(hue: 0.08, saturation: 0.8, brightness: 0.55))
+                .ignoresSafeArea()
+            VStack(spacing: 16) {
+                Text("あなたは")
+                    .font(.title2)
+                    .foregroundStyle(.white.opacity(0.85))
+                Text(isTreasure ? "📦" : "🔍")
+                    .font(.system(size: 90))
+                Text(isTreasure ? "宝" : "ハンター")
+                    .font(.system(size: 60, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                Text(isTreasure ? "この iPhone を隠そう" : "宝の iPhone を探し出そう")
+                    .font(.headline)
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+            .scaleEffect(appeared ? 1 : 0.6)
+            .opacity(appeared ? 1 : 0)
+        }
+        .onAppear {
+            withAnimation(.spring(duration: 0.45)) { appeared = true }
+        }
     }
 }
 

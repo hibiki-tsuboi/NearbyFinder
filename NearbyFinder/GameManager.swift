@@ -17,6 +17,8 @@ final class GameManager: ObservableObject {
     @Published private(set) var phase: GamePhase = .lobby
     @Published private(set) var role: PlayerRole?
     @Published private(set) var outcome: GameOutcome?
+    /// 役割決定直後の発表演出を表示中か（hiding の先頭約 2 秒、両端末で出す）
+    @Published private(set) var isRevealingRole = false
     @Published private(set) var hideSecondsRemaining: Int
     /// 隠す猶予（秒）。ロビーで変更でき、相手と同期して UserDefaults に保存される
     @Published private(set) var hideDuration: Int
@@ -38,6 +40,7 @@ final class GameManager: ObservableObject {
     private let feedback = ProximityFeedback()
     private var countdownTask: Task<Void, Never>?
     private var huntTimerTask: Task<Void, Never>?
+    private var revealTask: Task<Void, Never>?
     private var myRolePriority: UInt32 = 0
     private var cancellables: Set<AnyCancellable> = []
 
@@ -145,6 +148,15 @@ final class GameManager: ObservableObject {
     private func startHiding() {
         phase = .hiding
         hideSecondsRemaining = hideDuration
+        // 相手のタップで受け身側の画面が前触れなく切り替わるため、
+        // カウントダウンの前に「あなたは○○」の発表を挟んで唐突さを消す
+        isRevealingRole = true
+        revealTask?.cancel()
+        revealTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, !Task.isCancelled else { return }
+            self.isRevealingRole = false
+        }
         syncWatch()
         countdownTask?.cancel()
         countdownTask = Task { @MainActor [weak self] in
@@ -213,9 +225,11 @@ final class GameManager: ObservableObject {
     private func resetToLobby() {
         countdownTask?.cancel()
         huntTimerTask?.cancel()
+        revealTask?.cancel()
         feedback.shutdown()
         phase = .lobby
         role = nil
+        isRevealingRole = false
         outcome = nil
         isNewBest = false
         hideSecondsRemaining = hideDuration
