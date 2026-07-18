@@ -85,8 +85,8 @@ final class MultipeerSession: NSObject {
     /// MC は片側だけが切断済みの「半開き」状態に陥ることがある。こちらは接続済みの
     /// つもりで相手の招待を拒否し続け、相手は永遠に繋がれない（作り直し側の切断通知が
     /// 届き損ねたときに起きる）。接続中は互いに ping を送り合い、一定時間何も受信
-    /// できなければ死んだ接続として自ら切断し、通常の再接続サイクルに戻す。
-    private func startKeepalive() {
+    /// できなければ死んだ接続として自ら破棄し、通常の再接続サイクルに戻す。
+    private func startKeepalive(with peer: MCPeerID) {
         keepaliveTask?.cancel()
         lastReceiveAt = Date()
         keepaliveTask = Task { @MainActor [weak self] in
@@ -94,15 +94,30 @@ final class MultipeerSession: NSObject {
                 try? await Task.sleep(for: .seconds(5))
                 guard let self, !Task.isCancelled else { return }
                 let peers = self.session.connectedPeers
-                guard !peers.isEmpty else { return }
-                try? self.session.send(Self.pingData, toPeers: peers, with: .reliable)
+                if !peers.isEmpty {
+                    try? self.session.send(Self.pingData, toPeers: peers, with: .reliable)
+                }
+                // connectedPeers が空でもループは抜けない: 通知なしで接続が消えた
+                // 場合、上位層はまだ接続済みだと信じているので無受信判定で回収する
                 let silence = Date().timeIntervalSince(self.lastReceiveAt)
                 if silence > 15 {
-                    self.log.warning("keepalive: \(Int(silence)) 秒無受信。半開き接続とみなして切断する")
-                    self.session.disconnect()
+                    self.log.warning("keepalive: \(Int(silence)) 秒無受信。半開き接続とみなしてトランスポートを作り直す")
+                    self.recoverFromDeadConnection(peers.isEmpty ? [peer] : peers)
                     return
                 }
             }
+        }
+    }
+
+    /// 死んだと判定した接続の復帰処理。session.disconnect() だけだと自分側の
+    /// delegate に .notConnected が届かないことがあり（半開きはそもそも通知の
+    /// 取りこぼしで起きる現象）、その場合こちらだけ「接続済み」を信じ続ける
+    /// ゾンビ状態になって相手は二度と繋がれない。delegate 通知には頼らず、
+    /// トランスポートを作り直した上で上位層への切断通知も自前で行う。
+    private func recoverFromDeadConnection(_ stalePeers: [MCPeerID]) {
+        rebuildTransport()
+        for peer in stalePeers {
+            onPeerDisconnected?(peer)
         }
     }
 
@@ -237,7 +252,7 @@ extension MultipeerSession: MCSessionDelegate {
                 self.log.info("state: connected \(peerID.displayName)")
                 self.consecutiveFailures = 0
                 self.pendingInvites.removeValue(forKey: peerID)
-                self.startKeepalive()
+                self.startKeepalive(with: peerID)
                 self.onPeerConnected?(peerID)
             case .notConnected:
                 self.log.warning("state: notConnected \(peerID.displayName)")

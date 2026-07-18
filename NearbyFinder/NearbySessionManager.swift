@@ -273,18 +273,26 @@ final class NearbySessionManager: NSObject, ObservableObject {
     }
 
     private func adoptPeerToken(_ tokenData: Data) {
-        // 相手側の再送で同じトークンが重複して届いても、進行中の測距を作り直さない。
-        // ただし測距中に同じトークンが再送されてくるのは「こちらのトークンが相手に
-        // 届いておらず、相手が接続中のまま再送し続けている」サインなので、自分の
-        // トークンを送り返して片側だけ測距できない状態を解消する。
-        // （返信は 10 秒以上間隔を空け、互いの返信が無限に応酬するのを防ぐ）
-        if tokenData == peerTokenData, status == .ranging {
-            log.info("adoptPeerToken: 重複トークン受信（相手が再送中）")
-            if lastTokenReplyAt.map({ Date().timeIntervalSince($0) > 10 }) ?? true {
+        // 測距中に相手からトークンが届くのは「相手側の交換がまだ完結していない」
+        // サイン（こちらのトークンが届かず相手が再送し続けているか、相手が
+        // セッションを作り直した直後）。距離がまだ取れていなければ自分のトークンを
+        // 送り返し、片側だけ測距できない状態を解消する。
+        // - 距離が届いていれば交換は完結している（UWB 測距には相互のトークンが
+        //   必要）ので返信しない。これが応酬の自然な打ち止めになる
+        // - 返信は 10 秒以上間隔を空け、互いの返信が無限に応酬するのを防ぐ
+        // - バイト列の一致判定は「進行中の測距を作り直さない」ためだけに使い、
+        //   返信の要否はそれに依存させない（アーカイブ結果の揺れや相手のセッション
+        //   再作成で一致しなくなると、返信が一度も出ないまま詰まるため）
+        if status == .ranging {
+            if distance == nil, lastTokenReplyAt.map({ Date().timeIntervalSince($0) > 10 }) ?? true {
                 lastTokenReplyAt = Date()
+                log.info("adoptPeerToken: 測距未成立のままトークン受信 → 自分のトークンを返送")
                 shareMyToken()
             }
-            return
+            if tokenData == peerTokenData {
+                log.info("adoptPeerToken: 重複トークン受信（進行中の測距は維持）")
+                return
+            }
         }
         log.info("adoptPeerToken: 新しい相手トークンを受信")
         if runConfiguration(with: tokenData) {
@@ -295,10 +303,13 @@ final class NearbySessionManager: NSObject, ObservableObject {
     /// 相手トークンで NI コンフィグを実行して測距を開始する。トークンが壊れていれば false
     @discardableResult
     private func runConfiguration(with tokenData: Data) -> Bool {
+        // 生きたセッションがない状態（権限拒否後など）で status だけ .ranging に
+        // 進めて「接続済み」と表示してしまわないためのガード
+        guard status != .denied, status != .unsupported, let niSession else { return false }
         guard let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: tokenData) else { return false }
         let config = NINearbyPeerConfiguration(peerToken: token)
         config.isCameraAssistanceEnabled = useCameraAssistance
-        niSession?.run(config)
+        niSession.run(config)
         log.info("runConfiguration: NI config 実行（cameraAssistance=\(self.useCameraAssistance)）")
         status = .ranging
         note = nil
