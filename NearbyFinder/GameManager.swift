@@ -9,20 +9,26 @@ import Combine
 import UIKit
 #endif
 
-/// ゲーム全体の状態遷移（ロビー → 隠す → 探索 → 発見）を管理する。
+/// ゲーム全体の状態遷移（ロビー → 隠す → 探索 → 決着）を管理する。
 final class GameManager: ObservableObject {
     static let hideDuration = 60
+    static let huntDuration = 300   // 探索の制限時間（秒）。時間切れは宝役の勝ち
 
     @Published private(set) var phase: GamePhase = .lobby
     @Published private(set) var role: PlayerRole?
+    @Published private(set) var outcome: GameOutcome?
     @Published private(set) var hideSecondsRemaining = GameManager.hideDuration
     @Published private(set) var huntStartDate: Date?
-    @Published private(set) var foundDate: Date?
+    @Published private(set) var huntDeadline: Date?
+    @Published private(set) var finishDate: Date?
+    @Published private(set) var stats = GameStats.load()
+    @Published private(set) var isNewBest = false
 
     let nearby = NearbySessionManager()
 
-    private let haptics = HapticPulser()
+    private let feedback = ProximityFeedback()
     private var countdownTask: Task<Void, Never>?
+    private var huntTimerTask: Task<Void, Never>?
     private var myRolePriority: UInt32 = 0
     private var cancellables: Set<AnyCancellable> = []
 
@@ -32,7 +38,7 @@ final class GameManager: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         nearby.$distance
-            .sink { [weak self] distance in self?.distanceUpdated(distance) }
+            .sink { [weak self] distance in self?.feedback.distance = distance }
             .store(in: &cancellables)
         nearby.$status
             .sink { [weak self] status in
@@ -67,10 +73,11 @@ final class GameManager: ObservableObject {
         beginHunt()
     }
 
-    /// 宝の iPhone を物理的に見つけたハンターが、宝側の画面の長押しボタンで発見を確定する
+    /// 宝の iPhone を物理的に見つけたハンターが、宝側の画面のスライドで発見を確定する
     func confirmFound() {
         guard phase == .hunting, role == .treasure else { return }
-        finishGame(notifyPeer: true)
+        nearby.send(.found)
+        finish(with: .hunterWon)
     }
 
     func playAgain() {
@@ -102,26 +109,53 @@ final class GameManager: ObservableObject {
         countdownTask?.cancel()
         phase = .hunting
         huntStartDate = Date()
-        if role == .hunter { haptics.start() }
+        huntDeadline = Date().addingTimeInterval(TimeInterval(Self.huntDuration))
+        if role == .hunter {
+            feedback.startProximityLoop()
+        }
+        // 時間切れの判定は「みつけた！」ボタンを持つ宝側が代表して行い、結果を相手へ送る
+        if role == .treasure {
+            huntTimerTask?.cancel()
+            huntTimerTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(Double(Self.huntDuration)))
+                guard let self, !Task.isCancelled, self.phase == .hunting else { return }
+                self.nearby.send(.timeUp)
+                self.finish(with: .treasureWon)
+            }
+        }
     }
 
-    private func finishGame(notifyPeer: Bool) {
+    private func finish(with outcome: GameOutcome) {
         guard phase == .hunting else { return }
-        phase = .found
-        foundDate = Date()
-        haptics.stop()
-        haptics.playSuccess()
-        if notifyPeer { nearby.send(.found) }
+        phase = .finished
+        self.outcome = outcome
+        finishDate = Date()
+        huntTimerTask?.cancel()
+        feedback.stopProximityLoop()
+
+        var updated = stats
+        isNewBest = updated.record(outcome: outcome, clearSeconds: outcome == .hunterWon ? elapsedSeconds : nil)
+        updated.save()
+        stats = updated
+
+        switch outcome {
+        case .hunterWon: feedback.playVictory()
+        case .treasureWon: feedback.playTimeUp()
+        }
     }
 
     private func resetToLobby() {
         countdownTask?.cancel()
-        haptics.stop()
+        huntTimerTask?.cancel()
+        feedback.shutdown()
         phase = .lobby
         role = nil
+        outcome = nil
+        isNewBest = false
         hideSecondsRemaining = Self.hideDuration
         huntStartDate = nil
-        foundDate = nil
+        huntDeadline = nil
+        finishDate = nil
     }
 
     private func handle(_ message: GameMessage) {
@@ -140,37 +174,53 @@ final class GameManager: ObservableObject {
         case .gameStarted:
             beginHunt()
         case .found:
-            finishGame(notifyPeer: false)
+            finish(with: .hunterWon)
+        case .timeUp:
+            finish(with: .treasureWon)
         case .playAgain:
             resetToLobby()
         }
     }
 
-    private func distanceUpdated(_ distance: Float?) {
-        haptics.distance = distance
+    // MARK: - 表示用
+
+    private var elapsedSeconds: Int {
+        guard let start = huntStartDate else { return 0 }
+        return max(0, Int((finishDate ?? Date()).timeIntervalSince(start)))
     }
 
-    /// 探索開始からの経過時間（発見後は発見までのタイム）
-    var elapsedText: String {
-        guard let start = huntStartDate else { return "" }
-        let end = foundDate ?? Date()
-        let seconds = max(0, Int(end.timeIntervalSince(start)))
-        return String(format: "%d分%02d秒", seconds / 60, seconds % 60)
+    /// 探索開始からの経過時間（決着後は決着までのタイム）
+    var elapsedText: String { Self.timeString(elapsedSeconds) }
+
+    var bestTimeText: String? {
+        stats.bestClearSeconds.map(Self.timeString)
+    }
+
+    func remainingSeconds(now: Date) -> Int {
+        guard let deadline = huntDeadline else { return 0 }
+        return max(0, Int(deadline.timeIntervalSince(now).rounded()))
+    }
+
+    nonisolated static func timeString(_ seconds: Int) -> String {
+        String(format: "%d分%02d秒", seconds / 60, seconds % 60)
     }
 }
 
 #if os(iOS)
-/// 距離に応じて間隔と強さが変わる振動パルス（近いほど速く・強く）。
-final class HapticPulser {
+/// 距離に応じて間隔と強さが変わる振動＋ソナー音のパルス（近いほど速く・強く・大きく）と、
+/// 決着時の演出を出す。
+final class ProximityFeedback {
     var distance: Float?
 
+    private let audio = GameAudio()
     private var task: Task<Void, Never>?
     private let impact = UIImpactFeedbackGenerator(style: .medium)
     private let notification = UINotificationFeedbackGenerator()
 
-    func start() {
-        stop()
+    func startProximityLoop() {
+        stopProximityLoop()
         impact.prepare()
+        audio.start()
         task = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -182,25 +232,41 @@ final class HapticPulser {
                 let clamped = min(max(distance, 0.35), 8.0)
                 let t = Double((clamped - 0.35) / (8.0 - 0.35))   // 0 = 近い, 1 = 遠い
                 self.impact.impactOccurred(intensity: 1.0 - 0.6 * t)
+                self.audio.playPing(volume: Float(1.0 - 0.65 * t))
                 try? await Task.sleep(for: .seconds(0.08 + 1.1 * t))
             }
         }
     }
 
-    func stop() {
+    func stopProximityLoop() {
         task?.cancel()
         task = nil
     }
 
-    func playSuccess() {
+    func playVictory() {
         notification.notificationOccurred(.success)
+        audio.start()
+        audio.playFanfare()
+    }
+
+    func playTimeUp() {
+        notification.notificationOccurred(.warning)
+        audio.start()
+        audio.playTimeUp()
+    }
+
+    func shutdown() {
+        stopProximityLoop()
+        audio.stop()
     }
 }
 #else
-final class HapticPulser {
+final class ProximityFeedback {
     var distance: Float?
-    func start() {}
-    func stop() {}
-    func playSuccess() {}
+    func startProximityLoop() {}
+    func stopProximityLoop() {}
+    func playVictory() {}
+    func playTimeUp() {}
+    func shutdown() {}
 }
 #endif

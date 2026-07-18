@@ -21,8 +21,8 @@ struct ContentView: View {
                 } else {
                     TreasureWaitView(game: game)
                 }
-            case .found:
-                FoundView(game: game)
+            case .finished:
+                ResultView(game: game)
             }
         }
         .animation(.default, value: game.phase)
@@ -195,6 +195,11 @@ struct TreasureWaitView: View {
                 Text("ハンターが探しています…")
                     .font(.title3)
                     .foregroundStyle(.white)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text("残り \(GameManager.timeString(game.remainingSeconds(now: context.date))) 逃げ切ろう！")
+                        .font(.headline.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.8))
+                }
                 Text("見つかるまでこのままにしてね")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.6))
@@ -283,33 +288,70 @@ struct HoldAndSlideButton: View {
     }
 }
 
-// MARK: - 発見
+// MARK: - 決着（発見 or 時間切れ）
 
-struct FoundView: View {
+struct ResultView: View {
     @ObservedObject var game: GameManager
 
-    private let deepGreen = Color(hue: 0.36, saturation: 0.8, brightness: 0.4)
+    private var hunterWon: Bool { game.outcome == .hunterWon }
+
+    private var backgroundColor: Color {
+        hunterWon ? Color(hue: 0.36, saturation: 0.75, brightness: 0.6)
+                  : Color(hue: 0.72, saturation: 0.55, brightness: 0.55)
+    }
+
+    private var emoji: String {
+        switch (game.outcome, game.role) {
+        case (.hunterWon?, _): "🎉"
+        case (.treasureWon?, .treasure?): "🏆"
+        default: "⏰"
+        }
+    }
+
+    private var title: String {
+        switch (game.outcome, game.role) {
+        case (.hunterWon?, .hunter?): "発見！"
+        case (.hunterWon?, _): "見つかった！"
+        case (.treasureWon?, .treasure?): "逃げ切った！"
+        default: "時間切れ…"
+        }
+    }
 
     var body: some View {
         ZStack {
-            Color(hue: 0.36, saturation: 0.75, brightness: 0.6).ignoresSafeArea()
-            VStack(spacing: 20) {
+            backgroundColor.ignoresSafeArea()
+            VStack(spacing: 16) {
                 Spacer()
-                Text("🎉")
+                Text(emoji)
                     .font(.system(size: 90))
-                Text(game.role == .hunter ? "発見！" : "見つかった！")
+                Text(title)
                     .font(.system(size: 44, weight: .black, design: .rounded))
                     .foregroundStyle(.white)
-                Text("タイム: \(game.elapsedText)")
-                    .font(.title3.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.9))
+                if hunterWon {
+                    Text("タイム: \(game.elapsedText)")
+                        .font(.title3.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.9))
+                    if game.isNewBest {
+                        Text("🏅 ベスト更新！")
+                            .font(.headline)
+                            .foregroundStyle(.yellow)
+                    } else if let best = game.bestTimeText {
+                        Text("ベスト: \(best)")
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+                Text("ハンター \(game.stats.hunterWins) 勝 ・ 宝 \(game.stats.treasureWins) 勝")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.7))
+                    .padding(.top, 8)
                 Spacer()
                 Button {
                     game.playAgain()
                 } label: {
                     Text("もう一度遊ぶ")
                         .font(.headline)
-                        .foregroundStyle(deepGreen)
+                        .foregroundStyle(backgroundColor)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
                 }

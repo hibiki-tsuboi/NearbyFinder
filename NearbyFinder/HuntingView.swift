@@ -40,10 +40,16 @@ struct HuntingView: View {
             Text("宝を探せ！")
                 .font(.headline)
                 .foregroundStyle(.white.opacity(0.8))
-            TimelineView(.periodic(from: .now, by: 1)) { _ in
-                Text(game.elapsedText)
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.5))
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let remaining = game.remainingSeconds(now: context.date)
+                VStack(spacing: 2) {
+                    Text("残り \(GameManager.timeString(remaining))")
+                        .font(.title3.bold().monospacedDigit())
+                        .foregroundStyle(remaining <= 30 ? Color.red : Color.white)
+                    Text("経過 \(game.elapsedText)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.5))
+                }
             }
             if let note = game.nearby.note {
                 Text(note)
@@ -79,7 +85,7 @@ struct HuntingView: View {
                 Image(systemName: "dot.radiowaves.left.and.right")
                     .font(.system(size: 64))
                     .foregroundStyle(.white.opacity(0.7))
-                Text("iPhone をゆっくり左右に動かして\n方向をさがそう")
+                Text(game.nearby.directionHint ?? "iPhone をゆっくり左右に動かして\n方向をさがそう")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white.opacity(0.7))
             }

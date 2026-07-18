@@ -9,6 +9,7 @@ import simd
 import MultipeerConnectivity
 #if os(iOS)
 import NearbyInteraction
+import AVFoundation
 #endif
 
 enum NearbyStatus: Equatable {
@@ -29,6 +30,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var distance: Float?
     @Published private(set) var direction: simd_float3?
     @Published private(set) var note: String?
+    /// 方向が取れないときのユーザー向けヒント（camera assistance の収束状態から生成）
+    @Published private(set) var directionHint: String?
 
     /// discoveryToken 以外のゲームメッセージを上位層（GameManager）へ渡す
     var onGameMessage: ((GameMessage) -> Void)?
@@ -37,6 +40,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
     private var niSession: NISession?
     private var isPeerConnected = false
     private var searchHintTask: Task<Void, Never>?
+    /// ARKit 連携（camera assistance）で方向の精度と取得率を上げる。カメラ拒否時は false に落とす
+    private var useCameraAssistance = NISession.deviceCapabilities.supportsCameraAssistance
 
     func start() {
         guard NISession.deviceCapabilities.supportsPreciseDistanceMeasurement else {
@@ -91,6 +96,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
             self.peerName = nil
             self.distance = nil
             self.direction = nil
+            self.directionHint = nil
             if self.status != .unsupported && self.status != .denied {
                 self.status = .searching
                 self.note = wasConnected ? "接続が切れました。自動的に再接続します…" : nil
@@ -128,7 +134,9 @@ final class NearbySessionManager: NSObject, ObservableObject {
 
     private func adoptPeerToken(_ tokenData: Data) {
         guard let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: tokenData) else { return }
-        niSession?.run(NINearbyPeerConfiguration(peerToken: token))
+        let config = NINearbyPeerConfiguration(peerToken: token)
+        config.isCameraAssistanceEnabled = useCameraAssistance
+        niSession?.run(config)
         status = .ranging
         note = nil
     }
@@ -174,6 +182,31 @@ extension NearbySessionManager: NISessionDelegate {
         }
     }
 
+    nonisolated func session(_ session: NISession, didUpdateAlgorithmConvergence convergence: NIAlgorithmConvergence, for object: NINearbyObject?) {
+        let hint: String?
+        switch convergence.status {
+        case .converged, .unknown:
+            hint = nil
+        case .notConverged(let reasons):
+            if reasons.contains(.insufficientHorizontalSweep) {
+                hint = "iPhone を左右に振ってみよう"
+            } else if reasons.contains(.insufficientVerticalSweep) {
+                hint = "iPhone を上下に振ってみよう"
+            } else if reasons.contains(.insufficientMovement) {
+                hint = "iPhone を持って少し動き回ってみよう"
+            } else if reasons.contains(.insufficientLighting) {
+                hint = "暗すぎるかも。明るい場所で試そう"
+            } else {
+                hint = nil
+            }
+        @unknown default:
+            hint = nil
+        }
+        Task { @MainActor in
+            self.directionHint = hint
+        }
+    }
+
     nonisolated func sessionWasSuspended(_ session: NISession) {
         Task { @MainActor in
             self.note = "測距を一時停止中です（両方の端末でアプリを前面にしてください）"
@@ -201,8 +234,15 @@ extension NearbySessionManager: NISessionDelegate {
                 self.note = "設定 > プライバシーとセキュリティ > Nearby Interaction から許可してください"
                 return
             }
-            // その他のエラーはセッションを作り直して復帰を試みる
-            self.note = "セッションを再起動しています…（\(error.localizedDescription)）"
+            // カメラ拒否で camera assistance が失敗した場合は、補助なしに切り替えて再開する
+            let cameraAuth = AVCaptureDevice.authorizationStatus(for: .video)
+            if self.useCameraAssistance, cameraAuth == .denied || cameraAuth == .restricted {
+                self.useCameraAssistance = false
+                self.note = "カメラが許可されていないため、方向補助なしで続行します"
+            } else {
+                self.note = "セッションを再起動しています…（\(error.localizedDescription)）"
+            }
+            // セッションを作り直して復帰を試みる
             self.startNISession()
             if self.isPeerConnected { self.status = .connecting }
         }
@@ -218,6 +258,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var distance: Float?
     @Published private(set) var direction: simd_float3?
     @Published private(set) var note: String?
+    @Published private(set) var directionHint: String?
 
     var onGameMessage: ((GameMessage) -> Void)?
 
