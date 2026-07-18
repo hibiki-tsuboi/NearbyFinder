@@ -7,6 +7,7 @@ import Foundation
 import Combine
 import WatchConnectivity
 import NearbyInteraction
+import WatchKit
 
 /// ペアリング済み iPhone を経由して相手（宝）の iPhone と discovery token を交換し、
 /// Watch ↔ 宝 iPhone の直接 UWB 測距を行う。
@@ -24,6 +25,12 @@ final class WatchRanger: NSObject, ObservableObject {
 
     @Published private(set) var state: State = .waitingForPhone
     @Published private(set) var distance: Float?
+
+    // iPhone から中継されるゲーム状態（未受信なら nil = スタンドアロン表示）
+    @Published private(set) var gamePhase: String?
+    @Published private(set) var gameRole: String?
+    @Published private(set) var deadline: Date?
+    @Published private(set) var outcome: String?
 
     private var niSession: NISession?
     private var wcActivated = false
@@ -61,6 +68,25 @@ final class WatchRanger: NSObject, ObservableObject {
         niSession?.run(NINearbyPeerConfiguration(peerToken: token))
         state = .ranging
     }
+
+    private func applyContext(_ context: [String: Any]) {
+        if let data = context["peerToken"] as? Data {
+            receivedPeerToken(data)
+        }
+        gamePhase = context["phase"] as? String
+        gameRole = context["role"] as? String
+        deadline = context["deadline"] as? Date
+        let newOutcome = context["outcome"] as? String
+        if let newOutcome, newOutcome != outcome {
+            // 決着の瞬間を手首で知らせる
+            WKInterfaceDevice.current().play(didWin(outcome: newOutcome) ? .success : .failure)
+        }
+        outcome = newOutcome
+    }
+
+    private func didWin(outcome: String) -> Bool {
+        (outcome == "hunterWon" && gameRole == "hunter") || (outcome == "treasureWon" && gameRole == "treasure")
+    }
 }
 
 extension WatchRanger: WCSessionDelegate {
@@ -72,18 +98,14 @@ extension WatchRanger: WCSessionDelegate {
                 self.state = .waitingForPeer
             }
             self.sendTokenToPhone()
-            // Watch アプリ起動前に iPhone 側が送っていたトークンを拾う
-            if let data = session.receivedApplicationContext["peerToken"] as? Data {
-                self.receivedPeerToken(data)
-            }
+            // Watch アプリ起動前に iPhone 側が送っていたトークンと状態を拾う
+            self.applyContext(session.receivedApplicationContext)
         }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         Task { @MainActor in
-            if let data = applicationContext["peerToken"] as? Data {
-                self.receivedPeerToken(data)
-            }
+            self.applyContext(applicationContext)
         }
     }
 }

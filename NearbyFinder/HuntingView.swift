@@ -10,6 +10,7 @@ import simd
 /// 黒背景 + 大きな矢印で誘導し、1m を切ると緑にフェードして接近モードになる。
 struct HuntingView: View {
     @ObservedObject var game: GameManager
+    @State private var showAR = false
 
     private static let nearRange: Float = 1.0
 
@@ -18,6 +19,24 @@ struct HuntingView: View {
     private var isNear: Bool { (distance ?? .infinity) < Self.nearRange }
 
     var body: some View {
+        ZStack {
+            #if os(iOS)
+            if showAR {
+                ARTreasureView(arSession: game.nearby.arSession, peerTransform: game.nearby.peerWorldTransform)
+                    .ignoresSafeArea()
+                arHUD
+            } else {
+                normalContent
+            }
+            #else
+            normalContent
+            #endif
+        }
+        .preferredColorScheme(.dark)
+        .animation(.easeInOut(duration: 0.25), value: distance)
+    }
+
+    private var normalContent: some View {
         ZStack {
             background.ignoresSafeArea()
             VStack(spacing: 12) {
@@ -29,9 +48,43 @@ struct HuntingView: View {
             }
             .padding(24)
         }
-        .preferredColorScheme(.dark)
-        .animation(.easeInOut(duration: 0.25), value: distance)
     }
+
+    #if os(iOS)
+    /// AR モード中のオーバーレイ（距離チップ・ガイド・閉じるボタン）
+    private var arHUD: some View {
+        VStack(spacing: 12) {
+            HStack {
+                if let text = distanceText {
+                    Text("あと \(text)")
+                        .font(.title3.bold().monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.black.opacity(0.55), in: Capsule())
+                }
+                Spacer()
+                Button {
+                    showAR = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.largeTitle)
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+            }
+            if game.nearby.peerWorldTransform == nil {
+                Text("iPhone をゆっくり動かして宝の位置を特定中…")
+                    .font(.footnote)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.55), in: Capsule())
+            }
+            Spacer()
+        }
+        .padding()
+    }
+    #endif
 
     // MARK: - 各パーツ
 
@@ -112,6 +165,21 @@ struct HuntingView: View {
                     .foregroundStyle(distanceText == nil ? .white.opacity(0.3) : .white)
             }
             Spacer()
+            #if os(iOS)
+            Button {
+                showAR = true
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "arkit")
+                        .font(.title)
+                    Text("ARで見る")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.white)
+                .padding(12)
+                .background(.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
+            }
+            #endif
         }
     }
 

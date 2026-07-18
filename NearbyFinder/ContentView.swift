@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import Charts
 
 struct ContentView: View {
     @StateObject private var game = GameManager()
@@ -340,6 +341,10 @@ struct ResultView: View {
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.7))
                     .padding(.top, 8)
+                if game.distanceHistory.count >= 5 {
+                    approachChart
+                        .padding(.top, 8)
+                }
                 Spacer()
                 Button {
                     game.playAgain()
@@ -356,6 +361,46 @@ struct ResultView: View {
                 .padding(.bottom, 40)
             }
         }
+    }
+
+    /// 探索中の距離の推移。最接近点に注釈を付ける
+    private var approachChart: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("接近の記録")
+                .font(.footnote.bold())
+                .foregroundStyle(.white.opacity(0.85))
+            Chart(game.distanceHistory) { sample in
+                LineMark(
+                    x: .value("経過秒", sample.seconds),
+                    y: .value("距離", sample.distance)
+                )
+                .foregroundStyle(.white)
+                .interpolationMethod(.monotone)
+                if sample == closestSample {
+                    PointMark(
+                        x: .value("経過秒", sample.seconds),
+                        y: .value("距離", sample.distance)
+                    )
+                    .foregroundStyle(.yellow)
+                    .annotation(position: .top) {
+                        Text("最接近 \(String(format: "%.2f", sample.distance))m")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.yellow)
+                    }
+                }
+            }
+            .chartXAxisLabel("秒", alignment: .trailing)
+            .chartYAxisLabel("m")
+            .foregroundStyle(.white.opacity(0.8))
+            .frame(height: 140)
+        }
+        .padding(12)
+        .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal, 24)
+    }
+
+    private var closestSample: DistanceSample? {
+        game.distanceHistory.min { $0.distance < $1.distance }
     }
 }
 

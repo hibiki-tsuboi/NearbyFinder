@@ -23,6 +23,8 @@ final class GameManager: ObservableObject {
     @Published private(set) var finishDate: Date?
     @Published private(set) var stats = GameStats.load()
     @Published private(set) var isNewBest = false
+    /// 探索中の距離の推移（リザルトの接近グラフ用、1 秒 1 サンプル）
+    @Published private(set) var distanceHistory: [DistanceSample] = []
 
     let nearby = NearbySessionManager()
 
@@ -38,7 +40,7 @@ final class GameManager: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         nearby.$distance
-            .sink { [weak self] distance in self?.feedback.distance = distance }
+            .sink { [weak self] distance in self?.distanceUpdated(distance) }
             .store(in: &cancellables)
         nearby.$status
             .sink { [weak self] status in
@@ -90,6 +92,7 @@ final class GameManager: ObservableObject {
     private func startHiding() {
         phase = .hiding
         hideSecondsRemaining = Self.hideDuration
+        syncWatch()
         countdownTask?.cancel()
         countdownTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -110,6 +113,8 @@ final class GameManager: ObservableObject {
         phase = .hunting
         huntStartDate = Date()
         huntDeadline = Date().addingTimeInterval(TimeInterval(Self.huntDuration))
+        distanceHistory = []
+        syncWatch()
         if role == .hunter {
             feedback.startProximityLoop()
         }
@@ -137,6 +142,7 @@ final class GameManager: ObservableObject {
         isNewBest = updated.record(outcome: outcome, clearSeconds: outcome == .hunterWon ? elapsedSeconds : nil)
         updated.save()
         stats = updated
+        syncWatch()
 
         switch outcome {
         case .hunterWon: feedback.playVictory()
@@ -156,6 +162,24 @@ final class GameManager: ObservableObject {
         huntStartDate = nil
         huntDeadline = nil
         finishDate = nil
+        distanceHistory = []
+        syncWatch()
+    }
+
+    /// ペアの Apple Watch へゲーム状態を中継する（探索中以外は Watch 側が距離を隠す）
+    private func syncWatch() {
+        let phaseName = switch phase {
+        case .lobby: "lobby"
+        case .hiding: "hiding"
+        case .hunting: "hunting"
+        case .finished: "finished"
+        }
+        let outcomeName: String? = switch outcome {
+        case .some(.hunterWon): "hunterWon"
+        case .some(.treasureWon): "treasureWon"
+        case nil: nil
+        }
+        nearby.relayGameStateToWatch(phase: phaseName, role: role?.rawValue, deadline: huntDeadline, outcome: outcomeName)
     }
 
     private func handle(_ message: GameMessage) {
@@ -179,6 +203,16 @@ final class GameManager: ObservableObject {
             finish(with: .treasureWon)
         case .playAgain:
             resetToLobby()
+        }
+    }
+
+    private func distanceUpdated(_ distance: Float?) {
+        feedback.distance = distance
+        // 接近グラフ用に 1 秒 1 サンプルで記録する（両端末とも自分の測定値を記録）
+        guard phase == .hunting, let distance, let start = huntStartDate else { return }
+        let seconds = Int(Date().timeIntervalSince(start))
+        if distanceHistory.last?.seconds != seconds {
+            distanceHistory.append(DistanceSample(seconds: seconds, distance: distance))
         }
     }
 

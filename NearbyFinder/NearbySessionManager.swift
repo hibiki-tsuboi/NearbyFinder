@@ -10,6 +10,7 @@ import MultipeerConnectivity
 #if os(iOS)
 import NearbyInteraction
 import AVFoundation
+import ARKit
 #endif
 
 enum NearbyStatus: Equatable {
@@ -32,6 +33,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var note: String?
     /// 方向が取れないときのユーザー向けヒント（camera assistance の収束状態から生成）
     @Published private(set) var directionHint: String?
+    /// ARKit ワールド座標系での相手の推定位置（camera assistance 収束後に得られる）。AR 演出用
+    @Published private(set) var peerWorldTransform: simd_float4x4?
 
     /// discoveryToken 以外のゲームメッセージを上位層（GameManager）へ渡す
     var onGameMessage: ((GameMessage) -> Void)?
@@ -49,10 +52,18 @@ final class NearbySessionManager: NSObject, ObservableObject {
     private var watchPeerSession: NISession?
     private let watchPeerDelegate = WatchPeerSessionDelegate()
 
+    /// camera assistance と AR 演出（宝箱の描画）で共有する ARSession
+    let arSession = ARSession()
+
     func start() {
         guard NISession.deviceCapabilities.supportsPreciseDistanceMeasurement else {
             status = .unsupported
             return
+        }
+        if useCameraAssistance {
+            // 自前の ARSession を NI と共有すると、worldTransform(for:) の座標系で
+            // AR コンテンツを描画できる
+            arSession.run(ARWorldTrackingConfiguration())
         }
         configureMultipeerHandlers()
         startNISession()
@@ -62,6 +73,15 @@ final class NearbySessionManager: NSObject, ObservableObject {
             self?.send(.watchToken(data))
         }
         watchRelay.start()
+    }
+
+    /// ペアの Apple Watch へゲーム状態を中継する
+    func relayGameStateToWatch(phase: String, role: String?, deadline: Date?, outcome: String?) {
+        var state: [String: Any] = ["phase": phase]
+        if let role { state["role"] = role }
+        if let deadline { state["deadline"] = deadline }
+        if let outcome { state["outcome"] = outcome }
+        watchRelay.updateGameState(state)
     }
 
     /// アプリがフォアグラウンドへ戻ったときなどに、未接続なら探索をやり直す
@@ -85,6 +105,10 @@ final class NearbySessionManager: NSObject, ObservableObject {
     private func startNISession() {
         let session = NISession()
         session.delegate = self
+        if useCameraAssistance {
+            // 設定を run する前に呼ぶ必要がある
+            session.setARSession(arSession)
+        }
         niSession = session
         // 接続済みのまま作り直した場合は、新しいトークンを送って測距を再開する
         if isPeerConnected {
@@ -117,6 +141,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
             self.distance = nil
             self.direction = nil
             self.directionHint = nil
+            self.peerWorldTransform = nil
             if self.status != .unsupported && self.status != .denied {
                 self.status = .searching
                 self.note = wasConnected ? "接続が切れました。自動的に再接続します…" : nil
@@ -192,9 +217,12 @@ extension NearbySessionManager: NISessionDelegate {
         guard let object = nearbyObjects.first else { return }
         let distance = object.distance
         let direction = object.direction
+        // camera assistance が収束していれば ARKit ワールド座標での相手の位置が得られる
+        let worldTransform = session.worldTransform(for: object)
         Task { @MainActor in
             self.distance = distance
             self.direction = direction
+            self.peerWorldTransform = worldTransform
         }
     }
 
@@ -202,6 +230,7 @@ extension NearbySessionManager: NISessionDelegate {
         Task { @MainActor in
             self.distance = nil
             self.direction = nil
+            self.peerWorldTransform = nil
             switch reason {
             case .peerEnded:
                 // 相手側がセッションを終了した。作り直してトークンを再交換する
@@ -277,6 +306,8 @@ extension NearbySessionManager: NISessionDelegate {
             let cameraAuth = AVCaptureDevice.authorizationStatus(for: .video)
             if self.useCameraAssistance, cameraAuth == .denied || cameraAuth == .restricted {
                 self.useCameraAssistance = false
+                self.arSession.pause()
+                self.peerWorldTransform = nil
                 self.note = "カメラが許可されていないため、方向補助なしで続行します"
             } else {
                 self.note = "セッションを再起動しています…（\(error.localizedDescription)）"
@@ -314,12 +345,14 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var direction: simd_float3?
     @Published private(set) var note: String?
     @Published private(set) var directionHint: String?
+    @Published private(set) var peerWorldTransform: simd_float4x4?
 
     var onGameMessage: ((GameMessage) -> Void)?
 
     func start() {}
     func send(_ message: GameMessage) {}
     func refreshDiscoveryIfNeeded() {}
+    func relayGameStateToWatch(phase: String, role: String?, deadline: Date?, outcome: String?) {}
 }
 
 #endif

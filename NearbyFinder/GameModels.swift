@@ -39,6 +39,13 @@ enum GameMessage: Codable {
     case watchPeerToken(Data)
 }
 
+/// 探索中の距離の記録（1 秒に 1 サンプル）。リザルトの接近グラフに使う。
+struct DistanceSample: Identifiable, Equatable {
+    var id: Int { seconds }
+    let seconds: Int     // 探索開始からの経過秒
+    let distance: Float
+}
+
 /// 端末ローカルに保存する戦績。決着時に両端末がそれぞれ自分の分を更新する。
 struct GameStats: Codable, Equatable {
     var hunterWins = 0
