@@ -42,6 +42,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
 
     /// discoveryToken 以外のゲームメッセージを上位層（GameManager）へ渡す
     var onGameMessage: ((GameMessage) -> Void)?
+    /// MC 接続確立時に呼ばれる。isLeader は両端末で必ず一方だけ true（代表側）
+    var onConnected: ((_ isLeader: Bool) -> Void)?
 
     private let multipeer = MultipeerSession()
     private var niSession: NISession?
@@ -141,6 +143,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
             if let watchToken = self.watchRelay.watchToken {
                 self.send(.watchToken(watchToken))
             }
+            self.onConnected?(self.multipeer.isDesignatedLeader(vs: peer))
         }
         multipeer.onPeerDisconnected = { [weak self] _ in
             guard let self else { return }
@@ -363,6 +366,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var peerWorldTransform: simd_float4x4?
 
     var onGameMessage: ((GameMessage) -> Void)?
+    var onConnected: ((_ isLeader: Bool) -> Void)?
 
     var isDeviceSupported: Bool { false }
 
