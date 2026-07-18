@@ -54,6 +54,12 @@ final class NearbySessionManager: NSObject, ObservableObject {
         scheduleSearchHint()
     }
 
+    /// アプリがフォアグラウンドへ戻ったときなどに、未接続なら探索をやり直す
+    func refreshDiscoveryIfNeeded() {
+        guard status == .searching else { return }
+        multipeer.refreshDiscovery()
+    }
+
     /// 一定時間見つからないときに確認事項を表示する
     private func scheduleSearchHint() {
         searchHintTask?.cancel()
@@ -264,6 +270,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
 
     func start() {}
     func send(_ message: GameMessage) {}
+    func refreshDiscoveryIfNeeded() {}
 }
 
 #endif

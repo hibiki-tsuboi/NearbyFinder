@@ -7,6 +7,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var game = GameManager()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -32,6 +33,12 @@ struct ContentView: View {
             // 隠した端末が画面ロックすると測距が止まるため、自動ロックを無効にする
             UIApplication.shared.isIdleTimerDisabled = true
             #endif
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // バックグラウンドから戻ったとき、MC の探索が固まっていることがあるためやり直す
+            if newPhase == .active {
+                game.nearby.refreshDiscoveryIfNeeded()
+            }
         }
     }
 }
