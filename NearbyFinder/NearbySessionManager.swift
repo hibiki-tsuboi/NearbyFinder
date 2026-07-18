@@ -43,6 +43,12 @@ final class NearbySessionManager: NSObject, ObservableObject {
     /// ARKit 連携（camera assistance）で方向の精度と取得率を上げる。カメラ拒否時は false に落とす
     private var useCameraAssistance = NISession.deviceCapabilities.supportsCameraAssistance
 
+    /// 自分のペアの Apple Watch との橋渡し
+    private let watchRelay = PhoneWatchRelay()
+    /// 相手プレイヤーの Apple Watch と測距するセッション（相手の Watch トークンを受けたら作る）
+    private var watchPeerSession: NISession?
+    private let watchPeerDelegate = WatchPeerSessionDelegate()
+
     func start() {
         guard NISession.deviceCapabilities.supportsPreciseDistanceMeasurement else {
             status = .unsupported
@@ -52,6 +58,10 @@ final class NearbySessionManager: NSObject, ObservableObject {
         startNISession()
         multipeer.start()
         scheduleSearchHint()
+        watchRelay.onWatchToken = { [weak self] data in
+            self?.send(.watchToken(data))
+        }
+        watchRelay.start()
     }
 
     /// アプリがフォアグラウンドへ戻ったときなどに、未接続なら探索をやり直す
@@ -94,6 +104,10 @@ final class NearbySessionManager: NSObject, ObservableObject {
             self.status = .connecting
             self.note = nil
             self.shareMyToken()
+            // 自分の Watch が既にトークンを送ってきていれば、相手へも中継する
+            if let watchToken = self.watchRelay.watchToken {
+                self.send(.watchToken(watchToken))
+            }
         }
         multipeer.onPeerDisconnected = { [weak self] _ in
             guard let self else { return }
@@ -133,9 +147,28 @@ final class NearbySessionManager: NSObject, ObservableObject {
         switch message {
         case .discoveryToken(let tokenData):
             adoptPeerToken(tokenData)
+        case .watchToken(let tokenData):
+            adoptWatchToken(tokenData)
+        case .watchPeerToken(let tokenData):
+            watchRelay.forwardPeerToken(tokenData)
         default:
             onGameMessage?(message)
         }
+    }
+
+    /// 相手プレイヤーの Apple Watch のトークンを受け取り、Watch 用の測距セッションを開始して
+    /// こちらのトークンを返送する。距離は Watch 側だけが使うため、この端末では表示しない。
+    private func adoptWatchToken(_ tokenData: Data) {
+        guard let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: tokenData) else { return }
+        watchPeerSession?.invalidate()
+        let session = NISession()
+        session.delegate = watchPeerDelegate
+        watchPeerSession = session
+        session.run(NINearbyPeerConfiguration(peerToken: token))
+        guard let myToken = session.discoveryToken,
+              let data = try? NSKeyedArchiver.archivedData(withRootObject: myToken, requiringSecureCoding: true)
+        else { return }
+        send(.watchPeerToken(data))
     }
 
     private func adoptPeerToken(_ tokenData: Data) {
@@ -251,6 +284,22 @@ extension NearbySessionManager: NISessionDelegate {
             // セッションを作り直して復帰を試みる
             self.startNISession()
             if self.isPeerConnected { self.status = .connecting }
+        }
+    }
+}
+
+/// 相手プレイヤーの Apple Watch と測距するセッション用の最小 delegate。
+/// 距離を使うのは Watch 側だけなので、この端末では復帰処理だけを行う。
+private final class WatchPeerSessionDelegate: NSObject, NISessionDelegate {
+    nonisolated func sessionSuspensionEnded(_ session: NISession) {
+        if let config = session.configuration {
+            session.run(config)
+        }
+    }
+
+    nonisolated func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
+        if reason == .timeout, let config = session.configuration {
+            session.run(config)
         }
     }
 }

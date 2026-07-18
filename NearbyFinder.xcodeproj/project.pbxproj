@@ -6,8 +6,37 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		FADE00010000000000000001 /* NearbyFinderWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = FADE00010000000000000002 /* NearbyFinderWatch.app */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		FADE00010000000000000005 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B67CFAFE300B0252006ACAF2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FADE00010000000000000006;
+			remoteInfo = NearbyFinderWatch;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		FADE00010000000000000004 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				FADE00010000000000000001 /* NearbyFinderWatch.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		B67CFB06300B0252006ACAF2 /* NearbyFinder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NearbyFinder.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FADE00010000000000000002 /* NearbyFinderWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NearbyFinderWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +45,22 @@
 			path = NearbyFinder;
 			sourceTree = "<group>";
 		};
+		FADE00010000000000000003 /* NearbyFinderWatch */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = NearbyFinderWatch;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		B67CFB03300B0252006ACAF2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FADE0001000000000000000A /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +74,7 @@
 			isa = PBXGroup;
 			children = (
 				B67CFB08300B0252006ACAF2 /* NearbyFinder */,
+				FADE00010000000000000003 /* NearbyFinderWatch */,
 				B67CFB07300B0252006ACAF2 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +83,7 @@
 			isa = PBXGroup;
 			children = (
 				B67CFB06300B0252006ACAF2 /* NearbyFinder.app */,
+				FADE00010000000000000002 /* NearbyFinderWatch.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -55,10 +98,12 @@
 				B67CFB02300B0252006ACAF2 /* Sources */,
 				B67CFB03300B0252006ACAF2 /* Frameworks */,
 				B67CFB04300B0252006ACAF2 /* Resources */,
+				FADE00010000000000000004 /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				FADE00010000000000000007 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				B67CFB08300B0252006ACAF2 /* NearbyFinder */,
@@ -68,6 +113,28 @@
 			);
 			productName = NearbyFinder;
 			productReference = B67CFB06300B0252006ACAF2 /* NearbyFinder.app */;
+			productType = "com.apple.product-type.application";
+		};
+		FADE00010000000000000006 /* NearbyFinderWatch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FADE00010000000000000008 /* Build configuration list for PBXNativeTarget "NearbyFinderWatch" */;
+			buildPhases = (
+				FADE00010000000000000009 /* Sources */,
+				FADE0001000000000000000A /* Frameworks */,
+				FADE0001000000000000000B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				FADE00010000000000000003 /* NearbyFinderWatch */,
+			);
+			name = NearbyFinderWatch;
+			packageProductDependencies = (
+			);
+			productName = NearbyFinderWatch;
+			productReference = FADE00010000000000000002 /* NearbyFinderWatch.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -100,12 +167,20 @@
 			projectRoot = "";
 			targets = (
 				B67CFB05300B0252006ACAF2 /* NearbyFinder */,
+				FADE00010000000000000006 /* NearbyFinderWatch */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		B67CFB04300B0252006ACAF2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FADE0001000000000000000B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +197,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FADE00010000000000000009 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FADE00010000000000000007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = ios;
+			target = FADE00010000000000000006 /* NearbyFinderWatch */;
+			targetProxy = FADE00010000000000000005 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		B67CFB11300B0253006ACAF2 /* Debug */ = {
@@ -331,6 +422,70 @@
 			};
 			name = Release;
 		};
+		FADE0001000000000000000C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = AK92W9FN2D;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = NearbyFinder;
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "宝の iPhone までの距離を測るために使用します。";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKApplication = YES;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = jp.hibiki.NearbyFinder;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = jp.hibiki.NearbyFinder.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Debug;
+		};
+		FADE0001000000000000000D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = AK92W9FN2D;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = NearbyFinder;
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "宝の iPhone までの距離を測るために使用します。";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKApplication = YES;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = jp.hibiki.NearbyFinder;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = jp.hibiki.NearbyFinder.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -348,6 +503,15 @@
 			buildConfigurations = (
 				B67CFB14300B0253006ACAF2 /* Debug */,
 				B67CFB15300B0253006ACAF2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FADE00010000000000000008 /* Build configuration list for PBXNativeTarget "NearbyFinderWatch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FADE0001000000000000000C /* Debug */,
+				FADE0001000000000000000D /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -33,6 +33,10 @@ enum GameMessage: Codable {
     case found
     case timeUp
     case playAgain
+    /// 自分のペアの Apple Watch の NI トークン（相手 iPhone が Watch と測距するために送る）
+    case watchToken(Data)
+    /// 上記への返信。相手 iPhone が Watch 用に作ったセッションのトークン（Watch の持ち主経由で Watch へ渡す）
+    case watchPeerToken(Data)
 }
 
 /// 端末ローカルに保存する戦績。決着時に両端末がそれぞれ自分の分を更新する。

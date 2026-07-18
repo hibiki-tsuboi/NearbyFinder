@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NearbyFinder is an iPhone treasure-hunt app built on Nearby Interaction (UWB): one iPhone is hidden, the other finds it using live distance/direction readings. The Xcode project is multiplatform (iOS, macOS, visionOS), but Nearby Interaction only works on iOS — other platforms compile against a stub and show an "unsupported" UI. Real functionality requires two physical UWB-capable iPhones (iPhone 11+, not SE); Xcode can also simulate NI between two booted simulators.
 
-- Xcode project: `NearbyFinder.xcodeproj`, single target/scheme `NearbyFinder`
-- Deployment target: iOS/macOS 26.5; bundle ID `jp.hibiki.NearbyFinder`
+- Xcode project: `NearbyFinder.xcodeproj`, targets `NearbyFinder` (iOS/macOS/visionOS app) and `NearbyFinderWatch` (watchOS companion, embedded into the iOS app with `platformFilter = ios` so macOS/visionOS builds skip it)
+- Deployment target: iOS/macOS/watchOS 26.5; bundle IDs `jp.hibiki.NearbyFinder` / `.watchkitapp`
 - No test targets yet. No Swift Package dependencies.
 
 ## Commands
@@ -20,6 +20,8 @@ xcodebuild -project NearbyFinder.xcodeproj -scheme NearbyFinder \
 ```
 
 Compile-check macOS: same command with `-destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`.
+
+Build the watch app alone: `-scheme NearbyFinderWatch -destination 'generic/platform=watchOS Simulator'`.
 
 Run tests (once a test target is added): replace `build` with `test`; run a single test by appending `-only-testing:<TestTarget>/<TestClass>/<testMethod>`.
 
@@ -34,6 +36,7 @@ Layering, bottom to top:
 - `GameManager.swift` — game state machine (`lobby → hiding → hunting → finished`) plus `ProximityFeedback` (distance-driven haptic pulses synced with sonar pings). Roles sync over `.roleSelected` (a random `priority` breaks the both-picked-the-same-role tie). The hunt has a time limit (`huntDuration`, 300 s); the *treasure* device is authoritative for timeout — its watchdog sends `.timeUp` and both finish with `outcome = .treasureWon`. Found is confirmed physically, not by distance: the hunter uses the `SlideToConfirmButton` on the *treasure* device's screen — a phone-call-answer-style slider, slide the thumb to the end with no hold delay (`confirmFound()`, treasure-side only), which sends `.found`. The near-full-width directional slide is the accidental-touch protection; don't replace it with a tap or long-press button (fabric/skin contact triggers those), and don't add a hold-to-arm delay back (tried; it felt unresponsive — the user explicitly chose the pure slide). The two-stage gesture exists because the hidden phone may be pressed against fabric/skin; don't replace it with a plain tap or long-press. Distance-based auto-detection was removed deliberately — proximity fires before the phone is physically located. Win counts and best clear time (`GameStats`) persist per device in UserDefaults. It re-publishes the nested `NearbySessionManager`'s `objectWillChange` — nested `ObservableObject`s don't propagate automatically, so views observing `GameManager` still update on distance changes.
 - `GameAudio.swift` — sounds are synthesized at runtime with AVAudioEngine (sine-wave ping / fanfare / time-up buffers); there are no audio asset files. Uses the `.ambient` session category on purpose: respects the silent switch and mixes with other audio.
 - Views: `ContentView.swift` (phase switch + `LobbyView`/`HidingView`/`TreasureWaitView`/`ResultView`) and `HuntingView.swift` (Find-My-style finding UI: black background, big arrow when NI provides `direction`, remaining-time header, green fade + pulse rings under 1 m). Sets `isIdleTimerDisabled = true` so the hidden phone keeps ranging.
+- Apple Watch support (`NearbyFinderWatch/`, hunter-side accessory display): watchOS has no MultipeerConnectivity, so tokens relay Watch → WatchConnectivity (`PhoneWatchRelay` on iOS, applicationContext keys `watchToken`/`peerToken`) → own iPhone → MC (`.watchToken`/`.watchPeerToken` messages) → other iPhone, which opens a SECOND `NISession` (`watchPeerSession`, minimal `WatchPeerSessionDelegate`) against the watch and replies with its token. UWB ranging then runs directly Watch ↔ other iPhone; `WatchRanger` publishes distance (watchOS NI provides distance only, never direction) and `WatchHuntView` renders it with wrist haptics. The watch app suspends on wrist-down — ranging resumes on wrist raise.
 
 ## Constraints and conventions
 
