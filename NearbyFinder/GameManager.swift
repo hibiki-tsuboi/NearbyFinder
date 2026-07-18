@@ -13,6 +13,8 @@ import UIKit
 final class GameManager: ObservableObject {
     /// 先にこのラウンド数を取ったほうがシリーズ優勝
     static let seriesTarget = 3
+    /// 逃走中モードの確保距離（m）。この距離以内を連続検出したらハンターの勝ち
+    static let captureDistance: Float = 1.0
 
     @Published private(set) var phase: GamePhase = .lobby
     @Published private(set) var role: PlayerRole?
@@ -22,6 +24,8 @@ final class GameManager: ObservableObject {
     @Published private(set) var hideDuration: Int
     /// 探索の制限時間（秒）。時間切れは宝役の勝ち
     @Published private(set) var huntDuration: Int
+    /// ゲームモード（かくれんぼ / 逃走中）。設定同様に相手と同期される
+    @Published private(set) var mode: GameMode
     /// このシリーズで自分／相手が取ったラウンド数（ロビーに戻るとリセット）
     @Published private(set) var myRoundWins = 0
     @Published private(set) var peerRoundWins = 0
@@ -39,6 +43,7 @@ final class GameManager: ObservableObject {
     private var countdownTask: Task<Void, Never>?
     private var huntTimerTask: Task<Void, Never>?
     private var myRolePriority: UInt32 = 0
+    private var captureStreak = 0
     private var cancellables: Set<AnyCancellable> = []
 
     init() {
@@ -47,6 +52,7 @@ final class GameManager: ObservableObject {
         hideDuration = savedHide > 0 ? savedHide : 60
         huntDuration = savedHunt > 0 ? savedHunt : 300
         hideSecondsRemaining = savedHide > 0 ? savedHide : 60
+        mode = GameMode(rawValue: UserDefaults.standard.string(forKey: "gameMode") ?? "") ?? .hide
         // ネストした ObservableObject の変更をビューへ伝搬させる
         nearby.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -76,21 +82,23 @@ final class GameManager: ObservableObject {
         guard phase == .lobby, role == nil, nearby.status == .ranging else { return }
         role = selected
         myRolePriority = UInt32.random(in: .min ... .max)
-        nearby.send(.roleSelected(selected, priority: myRolePriority, hideDuration: hideDuration, huntDuration: huntDuration))
+        nearby.send(.roleSelected(selected, priority: myRolePriority, hideDuration: hideDuration, huntDuration: huntDuration, mode: mode))
         startHiding()
     }
 
     /// ロビーでの設定変更。相手にも同期し、次回のために保存する
-    func updateSettings(hideDuration: Int, huntDuration: Int, broadcast: Bool = true) {
+    func updateSettings(hideDuration: Int, huntDuration: Int, mode: GameMode, broadcast: Bool = true) {
         self.hideDuration = hideDuration
         self.huntDuration = huntDuration
+        self.mode = mode
         if phase == .lobby {
             hideSecondsRemaining = hideDuration
         }
         UserDefaults.standard.set(hideDuration, forKey: "hideDuration")
         UserDefaults.standard.set(huntDuration, forKey: "huntDuration")
+        UserDefaults.standard.set(mode.rawValue, forKey: "gameMode")
         if broadcast {
-            nearby.send(.settingsChanged(hideDuration: hideDuration, huntDuration: huntDuration))
+            nearby.send(.settingsChanged(hideDuration: hideDuration, huntDuration: huntDuration, mode: mode))
         }
     }
 
@@ -147,9 +155,13 @@ final class GameManager: ObservableObject {
         huntStartDate = Date()
         huntDeadline = Date().addingTimeInterval(TimeInterval(huntDuration))
         distanceHistory = []
+        captureStreak = 0
         syncWatch()
         if role == .hunter {
             feedback.startProximityLoop()
+        } else if mode == .chase {
+            // 逃走者は接近を振動で知る（音は自分の位置がバレるので鳴らさない）
+            feedback.startProximityLoop(withAudio: false)
         }
         // 時間切れの判定は「みつけた！」ボタンを持つ宝側が代表して行い、結果を相手へ送る
         if role == .treasure {
@@ -244,19 +256,19 @@ final class GameManager: ObservableObject {
         switch message {
         case .discoveryToken, .watchToken, .watchPeerToken:
             break   // NearbySessionManager が処理済み
-        case .roleSelected(let peerRole, let peerPriority, let hide, let hunt):
+        case .roleSelected(let peerRole, let peerPriority, let hide, let hunt, let peerMode):
             if role == nil {
                 guard phase == .lobby else { break }
                 // 役割を選んだ側の設定をそのラウンドの正とする
-                updateSettings(hideDuration: hide, huntDuration: hunt, broadcast: false)
+                updateSettings(hideDuration: hide, huntDuration: hunt, mode: peerMode, broadcast: false)
                 role = peerRole.opposite
                 startHiding()
             } else if peerRole == role, peerPriority > myRolePriority {
                 // 両者が同時に同じ役を選んだ場合は優先度の高い側に譲る
                 role = peerRole.opposite
             }
-        case .settingsChanged(let hide, let hunt):
-            updateSettings(hideDuration: hide, huntDuration: hunt, broadcast: false)
+        case .settingsChanged(let hide, let hunt, let peerMode):
+            updateSettings(hideDuration: hide, huntDuration: hunt, mode: peerMode, broadcast: false)
         case .gameStarted:
             beginHunt()
         case .found:
@@ -274,11 +286,24 @@ final class GameManager: ObservableObject {
 
     private func distanceUpdated(_ distance: Float?) {
         feedback.distance = distance
-        // 接近グラフ用に 1 秒 1 サンプルで記録する（両端末とも自分の測定値を記録）
         guard phase == .hunting, let distance, let start = huntStartDate else { return }
+        // 接近グラフ用に 1 秒 1 サンプルで記録する（両端末とも自分の測定値を記録）
         let seconds = Int(Date().timeIntervalSince(start))
         if distanceHistory.last?.seconds != seconds {
             distanceHistory.append(DistanceSample(seconds: seconds, distance: distance))
+        }
+        // 逃走中モードの確保判定はハンター側だけが行う。相手は目視できる人間なので
+        // かくれんぼと違い距離での自動判定が成立する（ノイズ対策で 3 回連続を要求）
+        if mode == .chase, role == .hunter {
+            if distance < Self.captureDistance {
+                captureStreak += 1
+                if captureStreak >= 3 {
+                    nearby.send(.found)
+                    finish(with: .hunterWon)
+                }
+            } else {
+                captureStreak = 0
+            }
         }
     }
 
@@ -317,10 +342,12 @@ final class ProximityFeedback {
     private let impact = UIImpactFeedbackGenerator(style: .medium)
     private let notification = UINotificationFeedbackGenerator()
 
-    func startProximityLoop() {
+    func startProximityLoop(withAudio: Bool = true) {
         stopProximityLoop()
         impact.prepare()
-        audio.start()
+        if withAudio {
+            audio.start()
+        }
         task = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -332,7 +359,9 @@ final class ProximityFeedback {
                 let clamped = min(max(distance, 0.35), 8.0)
                 let t = Double((clamped - 0.35) / (8.0 - 0.35))   // 0 = 近い, 1 = 遠い
                 self.impact.impactOccurred(intensity: 1.0 - 0.6 * t)
-                self.audio.playPing(volume: Float(1.0 - 0.65 * t))
+                if withAudio {
+                    self.audio.playPing(volume: Float(1.0 - 0.65 * t))
+                }
                 try? await Task.sleep(for: .seconds(0.08 + 1.1 * t))
             }
         }
@@ -363,7 +392,7 @@ final class ProximityFeedback {
 #else
 final class ProximityFeedback {
     var distance: Float?
-    func startProximityLoop() {}
+    func startProximityLoop(withAudio: Bool = true) {}
     func stopProximityLoop() {}
     func playVictory() {}
     func playTimeUp() {}

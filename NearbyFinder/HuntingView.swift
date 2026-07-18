@@ -90,7 +90,7 @@ struct HuntingView: View {
 
     private var header: some View {
         VStack(spacing: 4) {
-            Text("宝を探せ！")
+            Text(game.mode == .chase ? "逃走者を追え！" : "宝を探せ！")
                 .font(.headline)
                 .foregroundStyle(.white.opacity(0.8))
             TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -122,7 +122,9 @@ struct HuntingView: View {
                 Text("もうすぐ！")
                     .font(.title2.bold())
                     .foregroundStyle(.white)
-                Text("見つけたら宝の iPhone の画面の\nスライダーを右へスライドして発見確定！")
+                Text(game.mode == .chase
+                     ? "あと少し！1m 以内まで追い詰めて確保！"
+                     : "見つけたら宝の iPhone の画面の\nスライダーを右へスライドして発見確定！")
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white.opacity(0.7))
