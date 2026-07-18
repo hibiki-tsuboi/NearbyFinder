@@ -167,11 +167,11 @@ struct HuntingView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("あと")
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.75))
                 Text(distanceText ?? "—")
                     .font(.system(size: 54, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(distanceText == nil ? .white.opacity(0.3) : .white)
+                    .foregroundStyle(distanceText == nil ? .white.opacity(0.6) : .white)
             }
             Spacer()
             #if os(iOS)

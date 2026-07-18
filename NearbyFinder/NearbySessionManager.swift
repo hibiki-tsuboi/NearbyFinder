@@ -5,6 +5,7 @@
 
 import Foundation
 import Combine
+import os
 import simd
 import MultipeerConnectivity
 #if os(iOS)
@@ -54,6 +55,10 @@ final class NearbySessionManager: NSObject, ObservableObject {
     /// 受信済みの相手の NI トークン。NI セッションを作り直したときに再適用する
     /// （相手が自分のトークンを再送してくれるとは限らない）
     private var peerTokenData: Data?
+    /// 重複トークン受信に返信した直近時刻。返信の応酬ループを防ぐ
+    private var lastTokenReplyAt: Date?
+    /// 診断ログ（Console.app で subsystem: jp.hibiki.NearbyFinder を絞り込むと追える）
+    private let log = Logger(subsystem: "jp.hibiki.NearbyFinder", category: "nearby")
     /// ARKit 連携（camera assistance）で方向の精度と取得率を上げる。カメラ拒否時は false に落とす
     private var useCameraAssistance = NISession.deviceCapabilities.supportsCameraAssistance
 
@@ -105,6 +110,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
         searchHintTask?.cancel()
         tokenRetryTask?.cancel()
         peerTokenData = nil
+        lastTokenReplyAt = nil
         multipeer.stop()
         niSession?.invalidate()
         niSession = nil
@@ -187,6 +193,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
             self.isPeerConnected = false
             self.tokenRetryTask?.cancel()
             self.peerTokenData = nil
+            self.lastTokenReplyAt = nil
             self.peerName = nil
             self.distance = nil
             self.direction = nil
@@ -214,7 +221,11 @@ final class NearbySessionManager: NSObject, ObservableObject {
     private func shareMyToken() {
         guard let token = niSession?.discoveryToken,
               let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
-        else { return }
+        else {
+            log.warning("shareMyToken: トークンを送れない（discoveryToken=\(self.niSession?.discoveryToken == nil ? "nil" : "あり")）")
+            return
+        }
+        log.info("shareMyToken: 自分のトークンを送信")
         send(.discoveryToken(data))
     }
 
@@ -262,8 +273,20 @@ final class NearbySessionManager: NSObject, ObservableObject {
     }
 
     private func adoptPeerToken(_ tokenData: Data) {
-        // 相手側の再送で同じトークンが重複して届いても、進行中の測距を作り直さない
-        if tokenData == peerTokenData, status == .ranging { return }
+        // 相手側の再送で同じトークンが重複して届いても、進行中の測距を作り直さない。
+        // ただし測距中に同じトークンが再送されてくるのは「こちらのトークンが相手に
+        // 届いておらず、相手が接続中のまま再送し続けている」サインなので、自分の
+        // トークンを送り返して片側だけ測距できない状態を解消する。
+        // （返信は 10 秒以上間隔を空け、互いの返信が無限に応酬するのを防ぐ）
+        if tokenData == peerTokenData, status == .ranging {
+            log.info("adoptPeerToken: 重複トークン受信（相手が再送中）")
+            if lastTokenReplyAt.map({ Date().timeIntervalSince($0) > 10 }) ?? true {
+                lastTokenReplyAt = Date()
+                shareMyToken()
+            }
+            return
+        }
+        log.info("adoptPeerToken: 新しい相手トークンを受信")
         if runConfiguration(with: tokenData) {
             peerTokenData = tokenData
         }
@@ -276,6 +299,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
         let config = NINearbyPeerConfiguration(peerToken: token)
         config.isCameraAssistanceEnabled = useCameraAssistance
         niSession?.run(config)
+        log.info("runConfiguration: NI config 実行（cameraAssistance=\(self.useCameraAssistance)）")
         status = .ranging
         note = nil
         tokenRetryTask?.cancel()
@@ -298,6 +322,10 @@ extension NearbySessionManager: NISessionDelegate {
         // camera assistance が収束していれば ARKit ワールド座標での相手の位置が得られる
         let worldTransform = session.worldTransform(for: object)
         Task { @MainActor in
+            // 距離の出はじめ／途切れの遷移だけログする（毎フレームは出さない）
+            if (distance == nil) != (self.distance == nil) {
+                self.log.info("didUpdate: 距離 \(distance == nil ? "ロスト" : "取得開始")")
+            }
             self.distance = distance
             self.direction = direction
             self.horizontalAngle = horizontalAngle
@@ -307,18 +335,28 @@ extension NearbySessionManager: NISessionDelegate {
 
     nonisolated func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
         Task { @MainActor in
+            self.log.warning("didRemove: reason=\(reason == .peerEnded ? "peerEnded" : reason == .timeout ? "timeout" : "unknown")")
             self.distance = nil
             self.direction = nil
             self.horizontalAngle = nil
             self.peerWorldTransform = nil
             switch reason {
             case .peerEnded:
-                // 相手側がセッションを終了した。作り直してトークンを再交換する
-                // （startNISession が測距の再開まで進むことがあるため、状態は先に戻しておく）
+                // 相手側のセッションが終了した（エラー復帰などで作り直している）。
+                // 自分のセッションは無事なので invalidate せず、古い相手トークンを
+                // 捨てて新しいトークンを待つ。
+                // 注意: 以前はここで自分も invalidate し、保存済みトークンで測距を
+                // 再開していたが、相手の死んだセッションのトークンで config を実行
+                // すると相手側にも peerEnded が飛び、相互無効化が無限に続いて
+                // エラー表示のないまま距離が永遠に届かないデグレになっていた。
+                // このハンドラでは自分のセッションを絶対に invalidate しないこと。
+                self.peerTokenData = nil
                 if self.isPeerConnected { self.status = .connecting }
-                self.note = "相手のセッションが終了しました。再接続しています…"
-                self.niSession?.invalidate()
-                self.startNISession()
+                self.note = "相手の測距セッションが再起動しました。再接続しています…"
+                // 相手は作り直した直後で、こちらの新しいトークンは持っている
+                // （こちらは作り直していない）が、念のため再送して交換を確実にする
+                self.shareMyToken()
+                self.startTokenRetry()
             case .timeout:
                 // 測距圏外など。設定が残っていれば再実行してリトライする
                 if let config = self.niSession?.configuration {
@@ -375,6 +413,7 @@ extension NearbySessionManager: NISessionDelegate {
 
     nonisolated func session(_ session: NISession, didInvalidateWith error: Error) {
         Task { @MainActor in
+            self.log.error("didInvalidate: \(error.localizedDescription)")
             self.distance = nil
             self.direction = nil
             self.horizontalAngle = nil
