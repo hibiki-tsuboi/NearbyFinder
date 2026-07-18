@@ -204,9 +204,9 @@ struct TreasureWaitView: View {
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.6))
                 Spacer()
-                HoldAndSlideButton(
+                SlideToConfirmButton(
                     title: "みつけた！",
-                    hint: "この iPhone を見つけたハンターが長押し → 右へスライド"
+                    hint: "この iPhone を見つけたハンターが右端までスライド"
                 ) {
                     game.confirmFound()
                 }
@@ -219,28 +219,17 @@ struct TreasureWaitView: View {
     }
 }
 
-/// 長押しでロック解除してから右端までスライドで確定する誤操作防止ボタン。
-/// 隠し場所で布や体が画面に触れても、この2段階の操作は偶然には成立しない。
-///
-/// LongPressGesture.sequenced(before: DragGesture()) は長押し中に指が 10pt 動くだけで
-/// 全体が失敗して操作感が悪いため、単一の DragGesture で自前実装している。
-struct HoldAndSlideButton: View {
+/// 電話の応答スライダーと同じ操作感で、そのまま右端までスライドして確定するボタン。
+/// タップや布の擦れでは確定しない（トラックほぼ全幅ぶんの横スライドが必要）。
+struct SlideToConfirmButton: View {
     let title: String
     let hint: String
     let action: () -> Void
 
     @State private var offset: CGFloat = 0
-    @State private var isArmed = false
-    @State private var isTouching = false
-    @State private var isCancelled = false
-    @State private var armBase: CGFloat?
-    @State private var armTask: Task<Void, Never>?
+    @State private var isDragging = false
 
     private let thumbSize: CGFloat = 56
-    /// ロック解除までの長押し時間
-    private let armDelay: TimeInterval = 0.35
-    /// ロック解除前に許容する指の動き。これを超える早い動きは布の擦れとみなして無効化する
-    private let preArmTolerance: CGFloat = 40
 
     var body: some View {
         VStack(spacing: 10) {
@@ -248,72 +237,42 @@ struct HoldAndSlideButton: View {
                 let maxOffset = geo.size.width - thumbSize - 8
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(.white.opacity(isArmed ? 0.35 : (isTouching ? 0.22 : 0.15)))
-                    Text(isArmed ? "→ 右へスライド" : title)
+                        .fill(.white.opacity(isDragging ? 0.25 : 0.15))
+                    Text(title)
                         .font(.headline)
                         .foregroundStyle(.white.opacity(offset > 10 ? 0.2 : 0.8))
                         .frame(maxWidth: .infinity)
                     Circle()
                         .fill(.white)
                         .overlay {
-                            Image(systemName: "chevron.right.2")
+                            Image(systemName: offset >= maxOffset * 0.85 ? "checkmark" : "chevron.right.2")
                                 .font(.title3.bold())
                                 .foregroundStyle(.black)
                         }
                         .frame(width: thumbSize, height: thumbSize)
-                        .scaleEffect(isArmed ? 1.1 : 1.0)
                         .offset(x: 4 + offset)
                 }
-                .contentShape(Capsule())   // トラック全体をタッチ対象にして押しやすくする
-                .gesture(confirmGesture(maxOffset: maxOffset))
+                .contentShape(Capsule())   // トラック全体のどこからでもスライドを始められる
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            isDragging = true
+                            offset = min(max(0, value.translation.width), maxOffset)
+                        }
+                        .onEnded { _ in
+                            let confirmed = offset >= maxOffset * 0.85
+                            withAnimation(.spring(duration: 0.3)) { offset = 0 }
+                            isDragging = false
+                            if confirmed { action() }
+                        }
+                )
             }
             .frame(height: 64)
-            .sensoryFeedback(.impact, trigger: isArmed) { _, newValue in newValue }
             Text(hint)
                 .font(.footnote)
                 .foregroundStyle(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
         }
-    }
-
-    private func confirmGesture(maxOffset: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                if !isTouching {
-                    isTouching = true
-                    isCancelled = false
-                    armBase = nil
-                    // onChanged は指が動かないと呼ばれないため、解除判定はタイマーで行う
-                    armTask?.cancel()
-                    armTask = Task { @MainActor in
-                        try? await Task.sleep(for: .seconds(armDelay))
-                        guard !Task.isCancelled, isTouching, !isCancelled else { return }
-                        withAnimation(.easeOut(duration: 0.15)) { isArmed = true }
-                    }
-                }
-                guard !isCancelled else { return }
-                let translation = value.translation.width
-                if isArmed {
-                    // ロック解除時点の指の位置を基準にして、つまみが跳ねないようにする
-                    if armBase == nil { armBase = translation }
-                    offset = min(max(0, translation - (armBase ?? 0)), maxOffset)
-                } else if abs(translation) > preArmTolerance || abs(value.translation.height) > preArmTolerance {
-                    isCancelled = true
-                    armTask?.cancel()
-                }
-            }
-            .onEnded { _ in
-                armTask?.cancel()
-                let confirmed = isArmed && offset >= maxOffset * 0.85
-                withAnimation(.spring(duration: 0.3)) {
-                    offset = 0
-                    isArmed = false
-                }
-                isTouching = false
-                isCancelled = false
-                armBase = nil
-                if confirmed { action() }
-            }
     }
 }
 

@@ -69,7 +69,7 @@ struct HuntingView: View {
                 Text("もうすぐ！")
                     .font(.title2.bold())
                     .foregroundStyle(.white)
-                Text("見つけたら宝の iPhone の画面を\n長押し → スライドで発見確定！")
+                Text("見つけたら宝の iPhone の画面の\nスライダーを右へスライドして発見確定！")
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white.opacity(0.7))
