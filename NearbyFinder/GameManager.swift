@@ -276,7 +276,7 @@ final class GameManager: ObservableObject {
 
     private func handle(_ message: GameMessage) {
         switch message {
-        case .discoveryToken, .watchToken, .watchPeerToken:
+        case .discoveryToken, .discoveryTokenAck, .watchToken, .watchPeerToken:
             break   // NearbySessionManager が処理済み
         case .roleSelected(let peerRole, let peerPriority, let hide, let hunt):
             if role == nil {

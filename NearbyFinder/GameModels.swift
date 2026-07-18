@@ -27,7 +27,11 @@ enum GameOutcome: Equatable {
 /// MultipeerConnectivity で 2 台間を流れるメッセージ。
 /// priority は両者が同時に同じ役を選んだときのタイブレークに使う。
 enum GameMessage: Codable {
-    case discoveryToken(Data)
+    /// NI セッションごとに一意な ID を付けた discovery token。
+    /// 受信側は runConfiguration 成功後に同じ ID の ack を返す。
+    case discoveryToken(sessionID: UUID, data: Data)
+    /// 相手が自分の discovery token を適用できたことを示す応答
+    case discoveryTokenAck(tokenSessionID: UUID, senderSessionID: UUID)
     /// 役割選択。選んだ側の設定（隠す時間・制限時間）がそのラウンドの正とする
     case roleSelected(PlayerRole, priority: UInt32, hideDuration: Int, huntDuration: Int)
     /// ロビーでの設定変更の同期（後勝ち）

@@ -48,6 +48,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
 
     private let multipeer = MultipeerSession()
     private var niSession: NISession?
+    private var isStarted = false
     private var isPeerConnected = false
     private var searchHintTask: Task<Void, Never>?
     /// MC は繋がったのに NI トークン交換が完了しないときの再送ループ
@@ -55,8 +56,15 @@ final class NearbySessionManager: NSObject, ObservableObject {
     /// 受信済みの相手の NI トークン。NI セッションを作り直したときに再適用する
     /// （相手が自分のトークンを再送してくれるとは限らない）
     private var peerTokenData: Data?
-    /// 重複トークン受信に返信した直近時刻。返信の応酬ループを防ぐ
-    private var lastTokenReplyAt: Date?
+    /// NI セッションを作り直した世代を識別する ID。古い token / ack を混ぜないために使う
+    private var localTokenSessionID = UUID()
+    private var peerTokenSessionID: UUID?
+    /// 現在の NI セッションへ相手 token を適用済みか
+    private var didAdoptPeerToken = false
+    /// 相手が現在の自分 token を適用した ack を受信済みか
+    private var didReceiveAckForLocalToken = false
+    /// 相手 token より先に ack が届いた場合に、送信元の NI セッション ID を一時保持する
+    private var pendingAckFromPeerSessionID: UUID?
     /// 診断ログ（Console.app で subsystem: jp.hibiki.NearbyFinder を絞り込むと追える）
     private let log = Logger(subsystem: "jp.hibiki.NearbyFinder", category: "nearby")
     /// ARKit 連携（camera assistance）で方向の精度と取得率を上げる。カメラ拒否時は false に落とす
@@ -81,6 +89,11 @@ final class NearbySessionManager: NSObject, ObservableObject {
             status = .unsupported
             return
         }
+        guard !isStarted else {
+            refreshConnectionAfterForeground()
+            return
+        }
+        isStarted = true
         if useCameraAssistance {
             // 自前の ARSession を NI と共有すると、worldTransform(for:) の座標系で
             // AR コンテンツを描画できる
@@ -107,10 +120,14 @@ final class NearbySessionManager: NSObject, ObservableObject {
 
     /// タイトル画面へ戻るときに通信を全て止める。start() で再開できる
     func stop() {
+        isStarted = false
         searchHintTask?.cancel()
         tokenRetryTask?.cancel()
         peerTokenData = nil
-        lastTokenReplyAt = nil
+        peerTokenSessionID = nil
+        didAdoptPeerToken = false
+        didReceiveAckForLocalToken = false
+        pendingAckFromPeerSessionID = nil
         multipeer.stop()
         niSession?.invalidate()
         niSession = nil
@@ -130,10 +147,21 @@ final class NearbySessionManager: NSObject, ObservableObject {
         }
     }
 
-    /// アプリがフォアグラウンドへ戻ったときなどに、未接続なら探索をやり直す
-    func refreshDiscoveryIfNeeded() {
-        guard status == .searching else { return }
-        multipeer.refreshDiscovery()
+    /// フォアグラウンド復帰時に MC と NI の両方を監査し、表示だけ残った接続を回収する。
+    func refreshConnectionAfterForeground() {
+        guard isStarted else { return }
+        multipeer.refreshConnection()
+        guard status != .denied && status != .unsupported else { return }
+        guard isPeerConnected else { return }
+        if let config = niSession?.configuration {
+            niSession?.run(config)
+        }
+        // MC は生きていても相手の NI セッションが変わっている可能性があるため再通知する
+        shareMyToken()
+        if !hasCompletedTokenHandshake {
+            status = .connecting
+            startTokenRetry()
+        }
     }
 
     /// 一定時間見つからないときに確認事項を表示する
@@ -156,15 +184,25 @@ final class NearbySessionManager: NSObject, ObservableObject {
             session.setARSession(arSession)
         }
         niSession = session
+        localTokenSessionID = UUID()
+        didReceiveAckForLocalToken = false
+        pendingAckFromPeerSessionID = nil
+        didAdoptPeerToken = false
         // 接続済みのまま作り直した場合は、新しいトークンを送って測距を再開する
         if isPeerConnected {
-            shareMyToken()
-            if let peerTokenData {
+            status = .connecting
+            if let peerTokenData, let peerTokenSessionID {
                 // 手元に残っている相手トークンで測距を再開する
-                runConfiguration(with: peerTokenData)
-            } else {
-                startTokenRetry()
+                didAdoptPeerToken = runConfiguration(with: peerTokenData)
+                if didAdoptPeerToken {
+                    send(.discoveryTokenAck(
+                        tokenSessionID: peerTokenSessionID,
+                        senderSessionID: localTokenSessionID
+                    ))
+                }
             }
+            shareMyToken()
+            startTokenRetry()
         }
     }
 
@@ -174,11 +212,20 @@ final class NearbySessionManager: NSObject, ObservableObject {
             self.note = "\(Self.displayName(of: peer)) を発見、接続しています…"
         }
         multipeer.onPeerConnected = { [weak self] peer in
-            guard let self else { return }
+            guard let self, self.isStarted else { return }
             self.isPeerConnected = true
             self.peerName = Self.displayName(of: peer)
             self.status = .connecting
             self.note = nil
+            self.peerTokenData = nil
+            self.peerTokenSessionID = nil
+            self.didAdoptPeerToken = false
+            self.didReceiveAckForLocalToken = false
+            self.pendingAckFromPeerSessionID = nil
+            self.distance = nil
+            self.direction = nil
+            self.horizontalAngle = nil
+            self.peerWorldTransform = nil
             self.shareMyToken()
             self.startTokenRetry()
             // 自分の Watch が既にトークンを送ってきていれば、相手へも中継する
@@ -193,7 +240,10 @@ final class NearbySessionManager: NSObject, ObservableObject {
             self.isPeerConnected = false
             self.tokenRetryTask?.cancel()
             self.peerTokenData = nil
-            self.lastTokenReplyAt = nil
+            self.peerTokenSessionID = nil
+            self.didAdoptPeerToken = false
+            self.didReceiveAckForLocalToken = false
+            self.pendingAckFromPeerSessionID = nil
             self.peerName = nil
             self.distance = nil
             self.direction = nil
@@ -213,9 +263,15 @@ final class NearbySessionManager: NSObject, ObservableObject {
         }
     }
 
-    func send(_ message: GameMessage) {
-        guard let data = try? JSONEncoder().encode(message) else { return }
-        multipeer.send(data)
+    @discardableResult
+    func send(_ message: GameMessage) -> Bool {
+        do {
+            let data = try JSONEncoder().encode(message)
+            return multipeer.send(data)
+        } catch {
+            log.error("GameMessage encode 失敗: \(error.localizedDescription)")
+            return false
+        }
     }
 
     private func shareMyToken() {
@@ -225,29 +281,38 @@ final class NearbySessionManager: NSObject, ObservableObject {
             log.warning("shareMyToken: トークンを送れない（discoveryToken=\(self.niSession?.discoveryToken == nil ? "nil" : "あり")）")
             return
         }
-        log.info("shareMyToken: 自分のトークンを送信")
-        send(.discoveryToken(data))
+        log.info("shareMyToken: 自分のトークンを送信 session=\(self.localTokenSessionID.uuidString)")
+        send(.discoveryToken(sessionID: localTokenSessionID, data: data))
     }
 
     /// トークン送信は一度きりだと取りこぼす経路がある（discoveryToken がまだ nil、
-    /// 送信の失敗など）ため、測距が始まるまで数秒おきに再送する
+    /// 送信の失敗など）ため、相手から現在 session ID の ack が届くまで数秒おきに再送する
     private func startTokenRetry() {
         tokenRetryTask?.cancel()
         tokenRetryTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))
                 guard let self, !Task.isCancelled else { return }
-                guard self.status == .connecting, self.isPeerConnected else { return }
+                guard self.isPeerConnected, !self.hasCompletedTokenHandshake else { return }
                 self.shareMyToken()
             }
         }
     }
 
     private func receivedData(_ data: Data) {
-        guard let message = try? JSONDecoder().decode(GameMessage.self, from: data) else { return }
+        let message: GameMessage
+        do {
+            message = try JSONDecoder().decode(GameMessage.self, from: data)
+        } catch {
+            log.error("GameMessage decode 失敗（異なるビルドの可能性）: \(error.localizedDescription)")
+            note = "相手とアプリのバージョンが異なる可能性があります"
+            return
+        }
         switch message {
-        case .discoveryToken(let tokenData):
-            adoptPeerToken(tokenData)
+        case .discoveryToken(let sessionID, let tokenData):
+            adoptPeerToken(tokenData, sessionID: sessionID)
+        case .discoveryTokenAck(let tokenSessionID, let senderSessionID):
+            adoptTokenAck(tokenSessionID: tokenSessionID, senderSessionID: senderSessionID)
         case .watchToken(let tokenData):
             adoptWatchToken(tokenData)
         case .watchPeerToken(let tokenData):
@@ -272,48 +337,98 @@ final class NearbySessionManager: NSObject, ObservableObject {
         send(.watchPeerToken(data))
     }
 
-    private func adoptPeerToken(_ tokenData: Data) {
-        // 測距中に相手からトークンが届くのは「相手側の交換がまだ完結していない」
-        // サイン（こちらのトークンが届かず相手が再送し続けているか、相手が
-        // セッションを作り直した直後）。距離がまだ取れていなければ自分のトークンを
-        // 送り返し、片側だけ測距できない状態を解消する。
-        // - 距離が届いていれば交換は完結している（UWB 測距には相互のトークンが
-        //   必要）ので返信しない。これが応酬の自然な打ち止めになる
-        // - 返信は 10 秒以上間隔を空け、互いの返信が無限に応酬するのを防ぐ
-        // - バイト列の一致判定は「進行中の測距を作り直さない」ためだけに使い、
-        //   返信の要否はそれに依存させない（アーカイブ結果の揺れや相手のセッション
-        //   再作成で一致しなくなると、返信が一度も出ないまま詰まるため）
-        if status == .ranging {
-            if distance == nil, lastTokenReplyAt.map({ Date().timeIntervalSince($0) > 10 }) ?? true {
-                lastTokenReplyAt = Date()
-                log.info("adoptPeerToken: 測距未成立のままトークン受信 → 自分のトークンを返送")
-                shareMyToken()
-            }
-            if tokenData == peerTokenData {
-                log.info("adoptPeerToken: 重複トークン受信（進行中の測距は維持）")
-                return
-            }
+    private func adoptPeerToken(_ tokenData: Data, sessionID: UUID) {
+        guard isStarted, isPeerConnected else {
+            log.info("adoptPeerToken: 未接続中の遅延 token を無視")
+            return
         }
-        log.info("adoptPeerToken: 新しい相手トークンを受信")
-        if runConfiguration(with: tokenData) {
-            peerTokenData = tokenData
+
+        let isNewPeerSession = peerTokenSessionID != sessionID
+        if isNewPeerSession {
+            log.info("adoptPeerToken: 新しい相手セッションを受信 session=\(sessionID.uuidString)")
+            peerTokenSessionID = sessionID
+            peerTokenData = nil
+            didAdoptPeerToken = false
+            // 相手が NI セッションを作り直した場合、新セッションが自分 token を
+            // 適用したことを改めて確認する必要がある
+            didReceiveAckForLocalToken = pendingAckFromPeerSessionID == sessionID
+            pendingAckFromPeerSessionID = nil
+            distance = nil
+            direction = nil
+            horizontalAngle = nil
+            peerWorldTransform = nil
+            status = .connecting
+        } else if didAdoptPeerToken {
+            // ack 自体が取りこぼされて相手が再送している可能性があるので毎回答える
+            log.info("adoptPeerToken: 同じ相手 token を再受信 → ack を再送")
+            send(.discoveryTokenAck(tokenSessionID: sessionID, senderSessionID: localTokenSessionID))
+            completeTokenHandshakeIfPossible()
+            return
         }
+
+        guard runConfiguration(with: tokenData) else {
+            log.error("adoptPeerToken: token の適用に失敗 session=\(sessionID.uuidString)")
+            return
+        }
+        peerTokenData = tokenData
+        didAdoptPeerToken = true
+        send(.discoveryTokenAck(tokenSessionID: sessionID, senderSessionID: localTokenSessionID))
+
+        if isNewPeerSession {
+            // 新しい相手 NI セッションにも自分 token を必ず渡し直す
+            shareMyToken()
+            startTokenRetry()
+        }
+        completeTokenHandshakeIfPossible()
+    }
+
+    private func adoptTokenAck(tokenSessionID: UUID, senderSessionID: UUID) {
+        guard isStarted, isPeerConnected else { return }
+        guard tokenSessionID == localTokenSessionID else {
+            log.info("adoptTokenAck: 古い自分セッション宛ての ack を無視")
+            return
+        }
+        guard let peerTokenSessionID else {
+            // reliable の順序外や直前の送信失敗に備え、相手 token 到着まで保留する
+            pendingAckFromPeerSessionID = senderSessionID
+            log.info("adoptTokenAck: 相手 token より先に ack を受信。保留する")
+            return
+        }
+        guard peerTokenSessionID == senderSessionID else {
+            log.info("adoptTokenAck: 古い相手セッションからの ack を無視")
+            return
+        }
+        didReceiveAckForLocalToken = true
+        log.info("adoptTokenAck: 自分 token の適用確認 session=\(tokenSessionID.uuidString)")
+        completeTokenHandshakeIfPossible()
+    }
+
+    private var hasCompletedTokenHandshake: Bool {
+        isPeerConnected && didAdoptPeerToken && didReceiveAckForLocalToken
+    }
+
+    private func completeTokenHandshakeIfPossible() {
+        guard hasCompletedTokenHandshake else {
+            if isPeerConnected, status != .denied && status != .unsupported {
+                status = .connecting
+            }
+            return
+        }
+        log.info("token handshake 完了")
+        status = .ranging
+        note = nil
+        tokenRetryTask?.cancel()
     }
 
     /// 相手トークンで NI コンフィグを実行して測距を開始する。トークンが壊れていれば false
     @discardableResult
     private func runConfiguration(with tokenData: Data) -> Bool {
-        // 生きたセッションがない状態（権限拒否後など）で status だけ .ranging に
-        // 進めて「接続済み」と表示してしまわないためのガード
-        guard status != .denied, status != .unsupported, let niSession else { return false }
+        guard isStarted, isPeerConnected, status != .denied, status != .unsupported, let niSession else { return false }
         guard let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: tokenData) else { return false }
         let config = NINearbyPeerConfiguration(peerToken: token)
         config.isCameraAssistanceEnabled = useCameraAssistance
         niSession.run(config)
         log.info("runConfiguration: NI config 実行（cameraAssistance=\(self.useCameraAssistance)）")
-        status = .ranging
-        note = nil
-        tokenRetryTask?.cancel()
         return true
     }
 
@@ -321,10 +436,16 @@ final class NearbySessionManager: NSObject, ObservableObject {
         // MultipeerSession が付けたランダム接尾辞を表示用に取り除く
         String(peer.displayName.split(separator: "#").first ?? "相手")
     }
+
+    private func isCurrentNISession(_ callbackSessionID: ObjectIdentifier) -> Bool {
+        guard isStarted, let niSession else { return false }
+        return callbackSessionID == ObjectIdentifier(niSession)
+    }
 }
 
 extension NearbySessionManager: NISessionDelegate {
     nonisolated func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
+        let callbackSessionID = ObjectIdentifier(session)
         // ピアは 1 台だけなので先頭のオブジェクトが相手
         guard let object = nearbyObjects.first else { return }
         let distance = object.distance
@@ -333,6 +454,10 @@ extension NearbySessionManager: NISessionDelegate {
         // camera assistance が収束していれば ARKit ワールド座標での相手の位置が得られる
         let worldTransform = session.worldTransform(for: object)
         Task { @MainActor in
+            guard self.isCurrentNISession(callbackSessionID) else {
+                self.log.info("古い NISession の didUpdate を無視")
+                return
+            }
             // 距離の出はじめ／途切れの遷移だけログする（毎フレームは出さない）
             if (distance == nil) != (self.distance == nil) {
                 self.log.info("didUpdate: 距離 \(distance == nil ? "ロスト" : "取得開始")")
@@ -345,7 +470,12 @@ extension NearbySessionManager: NISessionDelegate {
     }
 
     nonisolated func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
+        let callbackSessionID = ObjectIdentifier(session)
         Task { @MainActor in
+            guard self.isCurrentNISession(callbackSessionID) else {
+                self.log.info("古い NISession の didRemove を無視")
+                return
+            }
             self.log.warning("didRemove: reason=\(reason == .peerEnded ? "peerEnded" : reason == .timeout ? "timeout" : "unknown")")
             self.distance = nil
             self.direction = nil
@@ -362,6 +492,10 @@ extension NearbySessionManager: NISessionDelegate {
                 // エラー表示のないまま距離が永遠に届かないデグレになっていた。
                 // このハンドラでは自分のセッションを絶対に invalidate しないこと。
                 self.peerTokenData = nil
+                self.peerTokenSessionID = nil
+                self.didAdoptPeerToken = false
+                self.didReceiveAckForLocalToken = false
+                self.pendingAckFromPeerSessionID = nil
                 if self.isPeerConnected { self.status = .connecting }
                 self.note = "相手の測距セッションが再起動しました。再接続しています…"
                 // 相手は作り直した直後で、こちらの新しいトークンは持っている
@@ -381,6 +515,7 @@ extension NearbySessionManager: NISessionDelegate {
     }
 
     nonisolated func session(_ session: NISession, didUpdateAlgorithmConvergence convergence: NIAlgorithmConvergence, for object: NINearbyObject?) {
+        let callbackSessionID = ObjectIdentifier(session)
         let hint: String?
         switch convergence.status {
         case .converged, .unknown:
@@ -401,18 +536,23 @@ extension NearbySessionManager: NISessionDelegate {
             hint = nil
         }
         Task { @MainActor in
+            guard self.isCurrentNISession(callbackSessionID) else { return }
             self.directionHint = hint
         }
     }
 
     nonisolated func sessionWasSuspended(_ session: NISession) {
+        let callbackSessionID = ObjectIdentifier(session)
         Task { @MainActor in
+            guard self.isCurrentNISession(callbackSessionID) else { return }
             self.note = "測距を一時停止中です（両方の端末でアプリを前面にしてください）"
         }
     }
 
     nonisolated func sessionSuspensionEnded(_ session: NISession) {
+        let callbackSessionID = ObjectIdentifier(session)
         Task { @MainActor in
+            guard self.isCurrentNISession(callbackSessionID) else { return }
             if let config = self.niSession?.configuration {
                 self.niSession?.run(config)
             }
@@ -423,8 +563,14 @@ extension NearbySessionManager: NISessionDelegate {
     }
 
     nonisolated func session(_ session: NISession, didInvalidateWith error: Error) {
+        let callbackSessionID = ObjectIdentifier(session)
         Task { @MainActor in
+            guard self.isCurrentNISession(callbackSessionID) else {
+                self.log.info("古い NISession の didInvalidate を無視")
+                return
+            }
             self.log.error("didInvalidate: \(error.localizedDescription)")
+            self.niSession = nil
             self.distance = nil
             self.direction = nil
             self.horizontalAngle = nil
@@ -488,8 +634,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
 
     func start() {}
     func stop() {}
-    func send(_ message: GameMessage) {}
-    func refreshDiscoveryIfNeeded() {}
+    @discardableResult func send(_ message: GameMessage) -> Bool { false }
+    func refreshConnectionAfterForeground() {}
     func relayGameStateToWatch(phase: String, role: String?, deadline: Date?, outcome: String?) {}
 }
 

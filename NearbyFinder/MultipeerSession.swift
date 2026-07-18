@@ -38,8 +38,14 @@ final class MultipeerSession: NSObject {
     /// 招待送信中のピアと送信時刻。タイムアウト前に同じ相手へ招待を重ねると
     /// MC のハンドシェイクが壊れることがあるため、返答があるまで再招待しない
     private var pendingInvites: [MCPeerID: Date] = [:]
+    /// MCSession が .connecting に入った時刻。iOS 26 では connected / notConnected の
+    /// どちらにも進まないことがあるため、watchdog で回収する
+    private var connectingStartedAt: [MCPeerID: Date] = [:]
+    /// 上位層へ接続済みとして通知したピア。古い callback で現在の接続を落とさないために保持する
+    private var connectedPeer: MCPeerID?
     private var retryTask: Task<Void, Never>?
     private var consecutiveFailures = 0
+    private var consecutiveSendFailures = 0
     private var lastDiscoveryRefresh = Date()
 
     /// 生存確認の ping（1 バイト。JSON の GameMessage と衝突しない値）
@@ -56,6 +62,10 @@ final class MultipeerSession: NSObject {
     private static let inviteTimeout: TimeInterval = 8
     /// 誰も見つからないまま探索を張り直すまでの時間
     private static let discoveryRefreshInterval: TimeInterval = 12
+    /// MCSession が .connecting のまま遷移しない場合にトランスポートを作り直すまでの時間
+    private static let connectingTimeout: TimeInterval = 15
+    /// reliable send が連続失敗した場合に半開き接続と判断する回数
+    private static let sendFailureLimit = 3
 
     override init() {
         let transport = Self.makeTransport()
@@ -95,7 +105,12 @@ final class MultipeerSession: NSObject {
                 guard let self, !Task.isCancelled else { return }
                 let peers = self.session.connectedPeers
                 if !peers.isEmpty {
-                    try? self.session.send(Self.pingData, toPeers: peers, with: .reliable)
+                    do {
+                        try self.session.send(Self.pingData, toPeers: peers, with: .reliable)
+                        self.consecutiveSendFailures = 0
+                    } catch {
+                        if self.recordSendFailure(error, peers: peers) { return }
+                    }
                 }
                 // connectedPeers が空でもループは抜けない: 通知なしで接続が消えた
                 // 場合、上位層はまだ接続済みだと信じているので無受信判定で回収する
@@ -121,15 +136,61 @@ final class MultipeerSession: NSObject {
         }
     }
 
-    func send(_ data: Data) {
+    @discardableResult
+    func send(_ data: Data) -> Bool {
         let peers = session.connectedPeers
-        guard !peers.isEmpty else { return }
-        try? session.send(data, toPeers: peers, with: .reliable)
+        guard !peers.isEmpty else {
+            log.warning("send: connectedPeers が空のため送信できない")
+            if let connectedPeer {
+                recoverFromDeadConnection([connectedPeer])
+            }
+            return false
+        }
+        do {
+            try session.send(data, toPeers: peers, with: .reliable)
+            consecutiveSendFailures = 0
+            return true
+        } catch {
+            recordSendFailure(error, peers: peers)
+            return false
+        }
     }
 
-    /// フォアグラウンド復帰時などに、未接続なら探索をやり直す
-    func refreshDiscovery() {
-        guard session.connectedPeers.isEmpty else { return }
+    /// reliable send の連続失敗を記録し、閾値を超えたら半開き接続として回収する。
+    /// 戻り値はトランスポートを再構築したかどうか。
+    @discardableResult
+    private func recordSendFailure(_ error: Error, peers: [MCPeerID]) -> Bool {
+        consecutiveSendFailures += 1
+        log.error("send 失敗（\(self.consecutiveSendFailures)/\(Self.sendFailureLimit)）: \(error.localizedDescription)")
+        guard consecutiveSendFailures >= Self.sendFailureLimit else { return false }
+        recoverFromDeadConnection(peers)
+        return true
+    }
+
+    /// フォアグラウンド復帰時に、表示上と MCSession の接続状態が一致しているか監査する。
+    /// 一致していれば ping を即送信し、不一致なら再構築、未接続なら探索を張り直す。
+    func refreshConnection() {
+        let peers = session.connectedPeers
+        if let connectedPeer, peers.isEmpty {
+            log.warning("foreground: 上位層は接続済みだが connectedPeers が空。再構築する")
+            recoverFromDeadConnection([connectedPeer])
+            return
+        }
+        if connectedPeer == nil, !peers.isEmpty {
+            log.warning("foreground: 未通知の接続が残っている。再構築する")
+            recoverFromDeadConnection(peers)
+            return
+        }
+        if !peers.isEmpty {
+            _ = send(Self.pingData)
+            return
+        }
+        if recoverFromConnectingTimeoutIfNeeded() { return }
+        refreshDiscovery()
+    }
+
+    private func refreshDiscovery() {
+        guard session.connectedPeers.isEmpty, connectingStartedAt.isEmpty else { return }
         browser.stopBrowsingForPeers()
         advertiser.stopAdvertisingPeer()
         discovered.removeAll()
@@ -181,7 +242,10 @@ final class MultipeerSession: NSObject {
         wireDelegates()
         discovered.removeAll()
         pendingInvites.removeAll()
+        connectingStartedAt.removeAll()
+        connectedPeer = nil
         consecutiveFailures = 0
+        consecutiveSendFailures = 0
         keepaliveTask?.cancel()
         log.info("トランスポートを作り直した（新 peerID: \(self.myPeerID.displayName)）")
     }
@@ -209,7 +273,10 @@ final class MultipeerSession: NSObject {
     }
 
     private func retryTick() {
+        if recoverFromConnectingTimeoutIfNeeded() { return }
         guard session.connectedPeers.isEmpty else { return }
+        // .connecting 中は招待を重ねない。タイムアウトした場合は上の watchdog が回収する
+        guard connectingStartedAt.isEmpty else { return }
         if discovered.isEmpty {
             // しばらく誰も見つからないときは Bonjour 探索を張り直す
             if Date().timeIntervalSince(lastDiscoveryRefresh) > Self.discoveryRefreshInterval {
@@ -229,7 +296,7 @@ final class MultipeerSession: NSObject {
     }
 
     private func inviteIfResponsible(_ peer: MCPeerID, firstSeen: Date) {
-        guard session.connectedPeers.isEmpty else { return }
+        guard session.connectedPeers.isEmpty, connectingStartedAt.isEmpty else { return }
         // 前の招待が生きているうちは重ねない（失敗・切断・喪失の時点で解除される）
         if let invitedAt = pendingInvites[peer], Date().timeIntervalSince(invitedAt) < Self.inviteTimeout {
             return
@@ -239,29 +306,64 @@ final class MultipeerSession: NSObject {
             browser.invitePeer(peer, to: session, withContext: nil, timeout: Self.inviteTimeout)
         }
     }
+
+    /// .connecting のまま callback が止まった接続試行を検出して作り直す。
+    @discardableResult
+    private func recoverFromConnectingTimeoutIfNeeded() -> Bool {
+        let now = Date()
+        guard connectingStartedAt.contains(where: { now.timeIntervalSince($0.value) > Self.connectingTimeout }) else {
+            return false
+        }
+        let stalePeers = Array(connectingStartedAt.keys)
+        log.warning("connecting watchdog: \(Int(Self.connectingTimeout)) 秒遷移なし。トランスポートを作り直す")
+        rebuildTransport()
+        for peer in stalePeers {
+            onPeerDisconnected?(peer)
+        }
+        return true
+    }
 }
 
 extension MultipeerSession: MCSessionDelegate {
     nonisolated func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        let callbackSessionID = ObjectIdentifier(session)
         Task { @MainActor in
+            guard callbackSessionID == ObjectIdentifier(self.session) else {
+                self.log.info("古い MCSession の state callback を無視: \(peerID.displayName)")
+                return
+            }
             switch state {
             case .connecting:
                 self.log.info("state: connecting \(peerID.displayName)")
+                if self.connectingStartedAt[peerID] == nil {
+                    self.connectingStartedAt[peerID] = Date()
+                }
                 self.onPeerConnecting?(peerID)
             case .connected:
                 self.log.info("state: connected \(peerID.displayName)")
+                let isDuplicate = self.connectedPeer == peerID
+                self.connectedPeer = peerID
+                self.connectingStartedAt.removeValue(forKey: peerID)
                 self.consecutiveFailures = 0
+                self.consecutiveSendFailures = 0
                 self.pendingInvites.removeValue(forKey: peerID)
                 self.startKeepalive(with: peerID)
-                self.onPeerConnected?(peerID)
+                if !isDuplicate {
+                    self.onPeerConnected?(peerID)
+                }
             case .notConnected:
                 self.log.warning("state: notConnected \(peerID.displayName)")
+                let wasConnecting = self.connectingStartedAt.removeValue(forKey: peerID) != nil
+                let wasConnected = self.connectedPeer == peerID
+                if wasConnected { self.connectedPeer = nil }
                 // 失敗が確定したので、次のリトライで即座に再招待できるようにする
                 self.pendingInvites.removeValue(forKey: peerID)
                 if self.session.connectedPeers.isEmpty {
                     self.keepaliveTask?.cancel()
                 }
-                self.onPeerDisconnected?(peerID)
+                if wasConnecting || wasConnected {
+                    self.onPeerDisconnected?(peerID)
+                }
                 // 接続の試行失敗が続くときは MC の内部状態が壊れている可能性があるため作り直す
                 if self.session.connectedPeers.isEmpty {
                     self.consecutiveFailures += 1
@@ -276,7 +378,12 @@ extension MultipeerSession: MCSessionDelegate {
     }
 
     nonisolated func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
+        let callbackSessionID = ObjectIdentifier(session)
         Task { @MainActor in
+            guard callbackSessionID == ObjectIdentifier(self.session) else {
+                self.log.info("古い MCSession の data callback を無視: \(peerID.displayName)")
+                return
+            }
             self.lastReceiveAt = Date()
             // keepalive の ping は上位層へ渡さない
             guard data != Self.pingData else { return }
@@ -292,7 +399,13 @@ extension MultipeerSession: MCSessionDelegate {
 
 extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
     nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
+        let callbackAdvertiserID = ObjectIdentifier(advertiser)
         Task { @MainActor in
+            guard callbackAdvertiserID == ObjectIdentifier(self.advertiser) else {
+                self.log.info("古い advertiser の招待を拒否: \(peerID.displayName)")
+                invitationHandler(false, nil)
+                return
+            }
             // 接続済みのときは受けない（二重セッション防止）。半開きで拒否し続ける
             // 状態は keepalive が接続を切って解消する
             let accept = self.session.connectedPeers.isEmpty
@@ -302,7 +415,9 @@ extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
     }
 
     nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
+        let callbackAdvertiserID = ObjectIdentifier(advertiser)
         Task { @MainActor in
+            guard callbackAdvertiserID == ObjectIdentifier(self.advertiser) else { return }
             self.onServiceError?("接続の待受を開始できません: \(error.localizedDescription)")
         }
     }
@@ -310,7 +425,12 @@ extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
 
 extension MultipeerSession: MCNearbyServiceBrowserDelegate {
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
+        let callbackBrowserID = ObjectIdentifier(browser)
         Task { @MainActor in
+            guard callbackBrowserID == ObjectIdentifier(self.browser) else {
+                self.log.info("古い browser の foundPeer を無視: \(peerID.displayName)")
+                return
+            }
             if self.discovered[peerID] == nil {
                 self.discovered[peerID] = Date()
             }
@@ -319,14 +439,18 @@ extension MultipeerSession: MCNearbyServiceBrowserDelegate {
     }
 
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
+        let callbackBrowserID = ObjectIdentifier(browser)
         Task { @MainActor in
+            guard callbackBrowserID == ObjectIdentifier(self.browser) else { return }
             self.discovered.removeValue(forKey: peerID)
             self.pendingInvites.removeValue(forKey: peerID)
         }
     }
 
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
+        let callbackBrowserID = ObjectIdentifier(browser)
         Task { @MainActor in
+            guard callbackBrowserID == ObjectIdentifier(self.browser) else { return }
             self.onServiceError?("相手の探索を開始できません: \(error.localizedDescription)")
         }
     }

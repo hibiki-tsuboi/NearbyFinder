@@ -43,7 +43,7 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, newPhase in
             // バックグラウンドから戻ったとき、MC の探索が固まっていることがあるためやり直す
             if newPhase == .active, hasStarted {
-                game.nearby.refreshDiscoveryIfNeeded()
+                game.nearby.refreshConnectionAfterForeground()
             }
         }
     }
