@@ -9,40 +9,208 @@ import Charts
 struct ContentView: View {
     @StateObject private var game = GameManager()
     @Environment(\.scenePhase) private var scenePhase
+    /// タイトル画面で「はじめる」を押すまで接続（電波の送出・権限ダイアログ）を始めない
+    @State private var hasStarted = false
 
     var body: some View {
         Group {
-            switch game.phase {
-            case .lobby:
-                LobbyView(game: game)
-            case .hiding:
-                HidingView(game: game)
-            case .hunting:
-                if game.role == .hunter {
-                    HuntingView(game: game)
-                } else if game.mode == .chase {
-                    RunnerEvadeView(game: game)
-                } else {
-                    TreasureWaitView(game: game)
+            if !hasStarted {
+                TitleView(game: game, onStart: startGame)
+            } else {
+                switch game.phase {
+                case .lobby:
+                    LobbyView(game: game)
+                case .hiding:
+                    HidingView(game: game)
+                case .hunting:
+                    if game.role == .hunter {
+                        HuntingView(game: game)
+                    } else if game.mode == .chase {
+                        RunnerEvadeView(game: game)
+                    } else {
+                        TreasureWaitView(game: game)
+                    }
+                case .finished:
+                    ResultView(game: game)
                 }
-            case .finished:
-                ResultView(game: game)
             }
         }
         .animation(.default, value: game.phase)
-        .onAppear {
-            game.start()
-            #if os(iOS)
-            // 隠した端末が画面ロックすると測距が止まるため、自動ロックを無効にする
-            UIApplication.shared.isIdleTimerDisabled = true
-            #endif
-        }
+        .animation(.default, value: hasStarted)
         .onChange(of: scenePhase) { _, newPhase in
             // バックグラウンドから戻ったとき、MC の探索が固まっていることがあるためやり直す
-            if newPhase == .active {
+            if newPhase == .active, hasStarted {
                 game.nearby.refreshDiscoveryIfNeeded()
             }
         }
+    }
+
+    private func startGame() {
+        game.start()
+        #if os(iOS)
+        // 隠した端末が画面ロックすると測距が止まるため、自動ロックを無効にする
+        UIApplication.shared.isIdleTimerDisabled = true
+        #endif
+        hasStarted = true
+    }
+}
+
+// MARK: - タイトル画面
+
+struct TitleView: View {
+    @ObservedObject var game: GameManager
+    let onStart: () -> Void
+
+    @State private var showHowToPlay = false
+
+    private var hasStats: Bool {
+        game.stats.hunterWins + game.stats.treasureWins > 0
+    }
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color(hue: 0.65, saturation: 0.7, brightness: 0.28), .black],
+                startPoint: .top, endPoint: .bottom
+            )
+            .ignoresSafeArea()
+            VStack(spacing: 12) {
+                Spacer()
+                ZStack {
+                    PulseRings()
+                        .frame(width: 180, height: 180)
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.system(size: 60))
+                        .foregroundStyle(.white)
+                }
+                .frame(height: 200)
+                Text("NearbyFinder")
+                    .font(.system(size: 40, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("iPhone かくれんぼ")
+                    .font(.headline)
+                    .foregroundStyle(.white.opacity(0.7))
+                if hasStats {
+                    statsCard
+                        .padding(.top, 12)
+                }
+                Spacer()
+                if game.nearby.isDeviceSupported {
+                    Button(action: onStart) {
+                        Label("はじめる", systemImage: "antenna.radiowaves.left.and.right")
+                            .font(.title3.bold())
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .padding(.horizontal, 32)
+                    Text("タップすると近くの相手を探しはじめます")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.6))
+                } else {
+                    Label("この端末は Nearby Interaction (UWB) に対応していません", systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                }
+                Button("あそびかた") {
+                    showHowToPlay = true
+                }
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.8))
+                .padding(.top, 8)
+                Spacer()
+                    .frame(height: 32)
+            }
+            .padding()
+        }
+        .preferredColorScheme(.dark)
+        .sheet(isPresented: $showHowToPlay) {
+            HowToPlayView()
+        }
+    }
+
+    private var statsCard: some View {
+        HStack(spacing: 0) {
+            statItem(value: "\(game.stats.hunterWins)", label: "ハンター勝利")
+            statItem(value: "\(game.stats.treasureWins)", label: "宝勝利")
+            if let best = game.bestTimeText {
+                statItem(value: best, label: "ベストタイム")
+            }
+        }
+        .padding(.vertical, 12)
+        .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal, 32)
+    }
+
+    private func statItem(value: String, label: String) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.title3.bold().monospacedDigit())
+                .foregroundStyle(.white)
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - あそびかた
+
+struct HowToPlayView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("じゅんび") {
+                    howToRow(icon: "iphone.gen3.radiowaves.left.and.right",
+                             text: "UWB 対応の iPhone 2台でアプリを開き「はじめる」をタップすると、自動でつながります")
+                    howToRow(icon: "slider.horizontal.3",
+                             text: "モード・隠す時間・制限時間はロビーで変更でき、相手の端末にも同期されます")
+                }
+                Section("かくれんぼ") {
+                    howToRow(icon: "shippingbox.fill",
+                             text: "宝役は猶予時間のあいだに iPhone を隠します（画面は点けたまま）")
+                    howToRow(icon: "location.north.line.fill",
+                             text: "ハンターは距離と方向を頼りに探します。近づくほど音と振動が速くなります")
+                    howToRow(icon: "hand.draw.fill",
+                             text: "見つけたら、宝の iPhone の画面のスライダーを右端までスライドして発見確定")
+                    howToRow(icon: "clock.badge.exclamationmark",
+                             text: "制限時間まで見つからなければ宝役の勝ちです")
+                }
+                Section("逃走中") {
+                    howToRow(icon: "figure.run",
+                             text: "逃走者は iPhone を持ったまま逃げ続けます")
+                    howToRow(icon: "figure.walk.motion",
+                             text: "ハンターが 1m 以内まで追い詰めたら確保。時間まで逃げ切れば逃走者の勝ちです")
+                }
+                Section("シリーズ") {
+                    howToRow(icon: "trophy.fill",
+                             text: "3勝先取のシリーズ制。ラウンドごとに役割を交代して再戦します")
+                    howToRow(icon: "applewatch",
+                             text: "Apple Watch を付けていれば、ハンターは手元で距離を確認できます")
+                }
+            }
+            .navigationTitle("あそびかた")
+            .toolbar {
+                Button("閉じる") { dismiss() }
+            }
+        }
+    }
+
+    private func howToRow(icon: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.body)
+                .foregroundStyle(.tint)
+                .frame(width: 28)
+            Text(text)
+                .font(.subheadline)
+        }
+        .padding(.vertical, 2)
     }
 }
 

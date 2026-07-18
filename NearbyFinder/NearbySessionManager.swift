@@ -55,6 +55,11 @@ final class NearbySessionManager: NSObject, ObservableObject {
     /// camera assistance と AR 演出（宝箱の描画）で共有する ARSession
     let arSession = ARSession()
 
+    /// start() を呼ぶ前（タイトル画面）から参照できる UWB 対応判定
+    var isDeviceSupported: Bool {
+        NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
+    }
+
     func start() {
         guard NISession.deviceCapabilities.supportsPreciseDistanceMeasurement else {
             status = .unsupported
@@ -348,6 +353,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var peerWorldTransform: simd_float4x4?
 
     var onGameMessage: ((GameMessage) -> Void)?
+
+    var isDeviceSupported: Bool { false }
 
     func start() {}
     func send(_ message: GameMessage) {}
