@@ -94,6 +94,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
             return
         }
         isStarted = true
+        log.info("start: lowPower=\(ProcessInfo.processInfo.isLowPowerModeEnabled) cameraAssistance=\(self.useCameraAssistance)")
         if useCameraAssistance {
             // 自前の ARSession を NI と共有すると、worldTransform(for:) の座標系で
             // AR コンテンツを描画できる
@@ -147,9 +148,17 @@ final class NearbySessionManager: NSObject, ObservableObject {
         }
     }
 
+    /// scenePhase が inactive/background に入った時点で keepalive の監視を止める。
+    func applicationDidBecomeInactive() {
+        guard isStarted else { return }
+        multipeer.applicationDidBecomeInactive()
+        log.info("lifecycle: inactive status=\(String(describing: self.status), privacy: .public)")
+    }
+
     /// フォアグラウンド復帰時に MC と NI の両方を監査し、表示だけ残った接続を回収する。
     func refreshConnectionAfterForeground() {
         guard isStarted else { return }
+        log.info("lifecycle: active status=\(String(describing: self.status), privacy: .public) lowPower=\(ProcessInfo.processInfo.isLowPowerModeEnabled)")
         multipeer.refreshConnection()
         guard status != .denied && status != .unsupported else { return }
         guard isPeerConnected else { return }
@@ -170,7 +179,11 @@ final class NearbySessionManager: NSObject, ObservableObject {
         searchHintTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(15))
             guard let self, !Task.isCancelled, self.status == .searching, self.note == nil else { return }
-            self.note = "見つからないときは、両方の端末で Wi-Fi と Bluetooth がオンか、設定 > プライバシーとセキュリティ > ローカルネットワーク で NearbyFinder が許可されているかを確認してください"
+            var hint = "見つからないときは、両方の端末で Wi-Fi と Bluetooth がオンか、設定 > プライバシーとセキュリティ > ローカルネットワーク で NearbyFinder が許可されているかを確認してください"
+            if ProcessInfo.processInfo.isLowPowerModeEnabled {
+                hint += "。低電力モードも一度オフにして試してください"
+            }
+            self.note = hint
         }
     }
 
@@ -213,6 +226,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
         }
         multipeer.onPeerConnected = { [weak self] peer in
             guard let self, self.isStarted else { return }
+            self.log.info("MC connected: peer=\(peer.displayName, privacy: .public)")
             self.isPeerConnected = true
             self.peerName = Self.displayName(of: peer)
             self.status = .connecting
@@ -237,6 +251,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
         multipeer.onPeerDisconnected = { [weak self] _ in
             guard let self else { return }
             let wasConnected = self.isPeerConnected
+            self.log.warning("MC disconnected: wasConnected=\(wasConnected)")
             self.isPeerConnected = false
             self.tokenRetryTask?.cancel()
             self.peerTokenData = nil
@@ -269,7 +284,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
             let data = try JSONEncoder().encode(message)
             return multipeer.send(data)
         } catch {
-            log.error("GameMessage encode 失敗: \(error.localizedDescription)")
+            let nsError = error as NSError
+            log.error("GameMessage encode 失敗: \(nsError.domain, privacy: .public)(\(nsError.code)) \(nsError.localizedDescription, privacy: .public)")
             return false
         }
     }
@@ -304,7 +320,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
         do {
             message = try JSONDecoder().decode(GameMessage.self, from: data)
         } catch {
-            log.error("GameMessage decode 失敗（異なるビルドの可能性）: \(error.localizedDescription)")
+            let nsError = error as NSError
+            log.error("GameMessage decode 失敗 bytes=\(data.count): \(nsError.domain, privacy: .public)(\(nsError.code)) \(nsError.localizedDescription, privacy: .public)")
             note = "相手とアプリのバージョンが異なる可能性があります"
             return
         }
@@ -424,7 +441,18 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @discardableResult
     private func runConfiguration(with tokenData: Data) -> Bool {
         guard isStarted, isPeerConnected, status != .denied, status != .unsupported, let niSession else { return false }
-        guard let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: tokenData) else { return false }
+        let token: NIDiscoveryToken
+        do {
+            guard let decoded = try NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: tokenData) else {
+                log.error("runConfiguration: discovery token が空")
+                return false
+            }
+            token = decoded
+        } catch {
+            let nsError = error as NSError
+            log.error("runConfiguration: token decode 失敗 bytes=\(tokenData.count): \(nsError.domain, privacy: .public)(\(nsError.code)) \(nsError.localizedDescription, privacy: .public)")
+            return false
+        }
         let config = NINearbyPeerConfiguration(peerToken: token)
         config.isCameraAssistanceEnabled = useCameraAssistance
         niSession.run(config)
@@ -433,7 +461,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
     }
 
     private static func displayName(of peer: MCPeerID) -> String {
-        // MultipeerSession が付けたランダム接尾辞を表示用に取り除く
+        // MultipeerSession が付けた起動 ID の短縮接尾辞を表示用に取り除く
         String(peer.displayName.split(separator: "#").first ?? "相手")
     }
 
@@ -569,7 +597,8 @@ extension NearbySessionManager: NISessionDelegate {
                 self.log.info("古い NISession の didInvalidate を無視")
                 return
             }
-            self.log.error("didInvalidate: \(error.localizedDescription)")
+            let nsError = error as NSError
+            self.log.error("didInvalidate: \(nsError.domain, privacy: .public)(\(nsError.code)) \(nsError.localizedDescription, privacy: .public)")
             self.niSession = nil
             self.distance = nil
             self.direction = nil
@@ -635,6 +664,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
     func start() {}
     func stop() {}
     @discardableResult func send(_ message: GameMessage) -> Bool { false }
+    func applicationDidBecomeInactive() {}
     func refreshConnectionAfterForeground() {}
     func relayGameStateToWatch(phase: String, role: String?, deadline: Date?, outcome: String?) {}
 }

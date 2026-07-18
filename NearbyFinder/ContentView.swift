@@ -41,9 +41,13 @@ struct ContentView: View {
         .animation(.default, value: game.isRevealingRole)
         .animation(.default, value: hasStarted)
         .onChange(of: scenePhase) { _, newPhase in
-            // バックグラウンドから戻ったとき、MC の探索が固まっていることがあるためやり直す
-            if newPhase == .active, hasStarted {
+            guard hasStarted else { return }
+            if newPhase == .active {
+                // 復帰直後は keepalive に猶予を与えた上で、MC と NI の状態を監査する
                 game.nearby.refreshConnectionAfterForeground()
+            } else {
+                // タスク停止時間を keepalive の無受信時間として数えない
+                game.nearby.applicationDidBecomeInactive()
             }
         }
     }
