@@ -28,11 +28,16 @@ enum GameOutcome: Equatable {
 /// priority は両者が同時に同じ役を選んだときのタイブレークに使う。
 enum GameMessage: Codable {
     case discoveryToken(Data)
-    case roleSelected(PlayerRole, priority: UInt32)
+    /// 役割選択。選んだ側の設定（隠す時間・制限時間）がそのラウンドの正とする
+    case roleSelected(PlayerRole, priority: UInt32, hideDuration: Int, huntDuration: Int)
+    /// ロビーでの設定変更の同期（後勝ち）
+    case settingsChanged(hideDuration: Int, huntDuration: Int)
     case gameStarted
     case found
     case timeUp
     case playAgain
+    /// 役割を交代して次のラウンドを開始する
+    case rematch
     /// 自分のペアの Apple Watch の NI トークン（相手 iPhone が Watch と測距するために送る）
     case watchToken(Data)
     /// 上記への返信。相手 iPhone が Watch 用に作ったセッションのトークン（Watch の持ち主経由で Watch へ渡す）

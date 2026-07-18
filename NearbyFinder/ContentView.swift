@@ -65,6 +65,7 @@ struct LobbyView: View {
             statusRow
                 .padding(.top, 8)
             Spacer()
+            settingsSection
             roleButtons
             if !isReady {
                 Text("もう1台の iPhone でもアプリを開くと役割を選べます")
@@ -109,6 +110,50 @@ struct LobbyView: View {
             Label("\(game.nearby.peerName ?? "相手")と接続済み", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         }
+    }
+
+    /// 隠す時間と制限時間の設定。変更は相手端末にも同期される
+    private var settingsSection: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                Text("隠す時間")
+                    .font(.footnote)
+                    .frame(width: 60, alignment: .leading)
+                Picker("隠す時間", selection: hideDurationBinding) {
+                    Text("30秒").tag(30)
+                    Text("60秒").tag(60)
+                    Text("90秒").tag(90)
+                }
+                .pickerStyle(.segmented)
+            }
+            HStack(spacing: 12) {
+                Text("制限時間")
+                    .font(.footnote)
+                    .frame(width: 60, alignment: .leading)
+                Picker("制限時間", selection: huntDurationBinding) {
+                    Text("3分").tag(180)
+                    Text("5分").tag(300)
+                    Text("10分").tag(600)
+                }
+                .pickerStyle(.segmented)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 8)
+    }
+
+    private var hideDurationBinding: Binding<Int> {
+        Binding(
+            get: { game.hideDuration },
+            set: { game.updateSettings(hideDuration: $0, huntDuration: game.huntDuration) }
+        )
+    }
+
+    private var huntDurationBinding: Binding<Int> {
+        Binding(
+            get: { game.huntDuration },
+            set: { game.updateSettings(hideDuration: game.hideDuration, huntDuration: $0) }
+        )
     }
 
     private var roleButtons: some View {
@@ -323,6 +368,7 @@ struct ResultView: View {
                 Text(title)
                     .font(.system(size: 44, weight: .black, design: .rounded))
                     .foregroundStyle(.white)
+                seriesSection
                 if hunterWon {
                     Text("タイム: \(game.elapsedText)")
                         .font(.title3.monospacedDigit())
@@ -346,20 +392,50 @@ struct ResultView: View {
                         .padding(.top, 8)
                 }
                 Spacer()
-                Button {
-                    game.playAgain()
-                } label: {
-                    Text("もう一度遊ぶ")
-                        .font(.headline)
-                        .foregroundStyle(backgroundColor)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                VStack(spacing: 10) {
+                    Button {
+                        game.rematch()
+                    } label: {
+                        Text(isSeriesOver ? "新しいシリーズへ（交代して再戦）" : "交代して再戦")
+                            .font(.headline)
+                            .foregroundStyle(backgroundColor)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.white)
+                    Button {
+                        game.playAgain()
+                    } label: {
+                        Text("役割選択に戻る")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.85))
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.white)
                 .padding(.horizontal, 32)
-                .padding(.bottom, 40)
+                .padding(.bottom, 32)
             }
+        }
+    }
+
+    private var isSeriesOver: Bool {
+        game.myRoundWins >= GameManager.seriesTarget || game.peerRoundWins >= GameManager.seriesTarget
+    }
+
+    @ViewBuilder
+    private var seriesSection: some View {
+        if game.myRoundWins >= GameManager.seriesTarget {
+            Text("🏆 \(GameManager.seriesTarget)勝先取！シリーズ優勝！")
+                .font(.headline)
+                .foregroundStyle(.yellow)
+        } else if game.peerRoundWins >= GameManager.seriesTarget {
+            Text("シリーズは相手の優勝… 次で取り返そう")
+                .font(.headline)
+                .foregroundStyle(.white.opacity(0.9))
+        } else {
+            Text("シリーズ: あなた \(game.myRoundWins) - \(game.peerRoundWins) 相手（\(GameManager.seriesTarget)勝先取）")
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.9))
         }
     }
 
