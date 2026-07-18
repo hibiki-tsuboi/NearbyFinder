@@ -83,6 +83,13 @@ final class GameManager: ObservableObject {
         nearby.stop()
     }
 
+    /// ロビーで接続が進まないときの救済。通信一式を作り直して探索からやり直す
+    func restartConnection() {
+        guard phase == .lobby else { return }
+        nearby.stop()
+        nearby.start()
+    }
+
     // MARK: - UI からの操作
 
     func selectRole(_ selected: PlayerRole) {

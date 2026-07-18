@@ -34,12 +34,17 @@ final class MultipeerSession: NSObject {
 
     /// 発見済みピアと最初に発見した時刻
     private var discovered: [MCPeerID: Date] = [:]
+    /// 招待送信中のピアと送信時刻。タイムアウト前に同じ相手へ招待を重ねると
+    /// MC のハンドシェイクが壊れることがあるため、返答があるまで再招待しない
+    private var pendingInvites: [MCPeerID: Date] = [:]
     private var retryTask: Task<Void, Never>?
     private var consecutiveFailures = 0
     private var lastDiscoveryRefresh = Date()
 
     /// 非招待側が招待を始めるまでの猶予
     private static let inviteGracePeriod: TimeInterval = 6
+    /// 招待の返答待ちタイムアウト
+    private static let inviteTimeout: TimeInterval = 8
     /// 誰も見つからないまま探索を張り直すまでの時間
     private static let discoveryRefreshInterval: TimeInterval = 12
 
@@ -79,6 +84,7 @@ final class MultipeerSession: NSObject {
         browser.stopBrowsingForPeers()
         advertiser.stopAdvertisingPeer()
         discovered.removeAll()
+        pendingInvites.removeAll()
         browser.startBrowsingForPeers()
         advertiser.startAdvertisingPeer()
         lastDiscoveryRefresh = Date()
@@ -125,6 +131,7 @@ final class MultipeerSession: NSObject {
         browser = transport.browser
         wireDelegates()
         discovered.removeAll()
+        pendingInvites.removeAll()
         consecutiveFailures = 0
     }
 
@@ -172,8 +179,13 @@ final class MultipeerSession: NSObject {
 
     private func inviteIfResponsible(_ peer: MCPeerID, firstSeen: Date) {
         guard session.connectedPeers.isEmpty else { return }
+        // 前の招待が生きているうちは重ねない（失敗・切断・喪失の時点で解除される）
+        if let invitedAt = pendingInvites[peer], Date().timeIntervalSince(invitedAt) < Self.inviteTimeout {
+            return
+        }
         if isDesignatedLeader(vs: peer) || Date().timeIntervalSince(firstSeen) > Self.inviteGracePeriod {
-            browser.invitePeer(peer, to: session, withContext: nil, timeout: 8)
+            pendingInvites[peer] = Date()
+            browser.invitePeer(peer, to: session, withContext: nil, timeout: Self.inviteTimeout)
         }
     }
 }
@@ -186,8 +198,11 @@ extension MultipeerSession: MCSessionDelegate {
                 self.onPeerConnecting?(peerID)
             case .connected:
                 self.consecutiveFailures = 0
+                self.pendingInvites.removeValue(forKey: peerID)
                 self.onPeerConnected?(peerID)
             case .notConnected:
+                // 失敗が確定したので、次のリトライで即座に再招待できるようにする
+                self.pendingInvites.removeValue(forKey: peerID)
                 self.onPeerDisconnected?(peerID)
                 // 接続の試行失敗が続くときは MC の内部状態が壊れている可能性があるため作り直す
                 if self.session.connectedPeers.isEmpty {
@@ -243,6 +258,7 @@ extension MultipeerSession: MCNearbyServiceBrowserDelegate {
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
         Task { @MainActor in
             self.discovered.removeValue(forKey: peerID)
+            self.pendingInvites.removeValue(forKey: peerID)
         }
     }
 

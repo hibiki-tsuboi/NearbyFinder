@@ -49,6 +49,11 @@ final class NearbySessionManager: NSObject, ObservableObject {
     private var niSession: NISession?
     private var isPeerConnected = false
     private var searchHintTask: Task<Void, Never>?
+    /// MC は繋がったのに NI トークン交換が完了しないときの再送ループ
+    private var tokenRetryTask: Task<Void, Never>?
+    /// 受信済みの相手の NI トークン。NI セッションを作り直したときに再適用する
+    /// （相手が自分のトークンを再送してくれるとは限らない）
+    private var peerTokenData: Data?
     /// ARKit 連携（camera assistance）で方向の精度と取得率を上げる。カメラ拒否時は false に落とす
     private var useCameraAssistance = NISession.deviceCapabilities.supportsCameraAssistance
 
@@ -98,6 +103,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
     /// タイトル画面へ戻るときに通信を全て止める。start() で再開できる
     func stop() {
         searchHintTask?.cancel()
+        tokenRetryTask?.cancel()
+        peerTokenData = nil
         multipeer.stop()
         niSession?.invalidate()
         niSession = nil
@@ -146,6 +153,12 @@ final class NearbySessionManager: NSObject, ObservableObject {
         // 接続済みのまま作り直した場合は、新しいトークンを送って測距を再開する
         if isPeerConnected {
             shareMyToken()
+            if let peerTokenData {
+                // 手元に残っている相手トークンで測距を再開する
+                runConfiguration(with: peerTokenData)
+            } else {
+                startTokenRetry()
+            }
         }
     }
 
@@ -161,6 +174,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
             self.status = .connecting
             self.note = nil
             self.shareMyToken()
+            self.startTokenRetry()
             // 自分の Watch が既にトークンを送ってきていれば、相手へも中継する
             if let watchToken = self.watchRelay.watchToken {
                 self.send(.watchToken(watchToken))
@@ -171,6 +185,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
             guard let self else { return }
             let wasConnected = self.isPeerConnected
             self.isPeerConnected = false
+            self.tokenRetryTask?.cancel()
+            self.peerTokenData = nil
             self.peerName = nil
             self.distance = nil
             self.direction = nil
@@ -200,6 +216,20 @@ final class NearbySessionManager: NSObject, ObservableObject {
               let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
         else { return }
         send(.discoveryToken(data))
+    }
+
+    /// トークン送信は一度きりだと取りこぼす経路がある（discoveryToken がまだ nil、
+    /// 送信の失敗など）ため、測距が始まるまで数秒おきに再送する
+    private func startTokenRetry() {
+        tokenRetryTask?.cancel()
+        tokenRetryTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))
+                guard let self, !Task.isCancelled else { return }
+                guard self.status == .connecting, self.isPeerConnected else { return }
+                self.shareMyToken()
+            }
+        }
     }
 
     private func receivedData(_ data: Data) {
@@ -232,12 +262,24 @@ final class NearbySessionManager: NSObject, ObservableObject {
     }
 
     private func adoptPeerToken(_ tokenData: Data) {
-        guard let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: tokenData) else { return }
+        // 相手側の再送で同じトークンが重複して届いても、進行中の測距を作り直さない
+        if tokenData == peerTokenData, status == .ranging { return }
+        if runConfiguration(with: tokenData) {
+            peerTokenData = tokenData
+        }
+    }
+
+    /// 相手トークンで NI コンフィグを実行して測距を開始する。トークンが壊れていれば false
+    @discardableResult
+    private func runConfiguration(with tokenData: Data) -> Bool {
+        guard let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: tokenData) else { return false }
         let config = NINearbyPeerConfiguration(peerToken: token)
         config.isCameraAssistanceEnabled = useCameraAssistance
         niSession?.run(config)
         status = .ranging
         note = nil
+        tokenRetryTask?.cancel()
+        return true
     }
 
     private static func displayName(of peer: MCPeerID) -> String {
@@ -272,10 +314,11 @@ extension NearbySessionManager: NISessionDelegate {
             switch reason {
             case .peerEnded:
                 // 相手側がセッションを終了した。作り直してトークンを再交換する
-                self.niSession?.invalidate()
-                self.startNISession()
+                // （startNISession が測距の再開まで進むことがあるため、状態は先に戻しておく）
                 if self.isPeerConnected { self.status = .connecting }
                 self.note = "相手のセッションが終了しました。再接続しています…"
+                self.niSession?.invalidate()
+                self.startNISession()
             case .timeout:
                 // 測距圏外など。設定が残っていれば再実行してリトライする
                 if let config = self.niSession?.configuration {
@@ -352,8 +395,9 @@ extension NearbySessionManager: NISessionDelegate {
                 self.note = "セッションを再起動しています…（\(error.localizedDescription)）"
             }
             // セッションを作り直して復帰を試みる
-            self.startNISession()
+            // （startNISession が測距の再開まで進むことがあるため、状態は先に戻しておく）
             if self.isPeerConnected { self.status = .connecting }
+            self.startNISession()
         }
     }
 }

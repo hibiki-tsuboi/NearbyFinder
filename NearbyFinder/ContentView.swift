@@ -68,7 +68,6 @@ struct TitleView: View {
     let onStart: () -> Void
 
     @State private var showHowToPlay = false
-    @State private var showSettings = false
 
     private var hasStats: Bool {
         game.stats.hunterWins + game.stats.treasureWins > 0
@@ -121,17 +120,10 @@ struct TitleView: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
                 }
-                HStack(spacing: 28) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Label("設定", systemImage: "gearshape")
-                    }
-                    Button {
-                        showHowToPlay = true
-                    } label: {
-                        Label("あそびかた", systemImage: "questionmark.circle")
-                    }
+                Button {
+                    showHowToPlay = true
+                } label: {
+                    Label("あそびかた", systemImage: "questionmark.circle")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.8))
@@ -144,9 +136,6 @@ struct TitleView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showHowToPlay) {
             HowToPlayView()
-        }
-        .sheet(isPresented: $showSettings) {
-            GameSettingsSheet(game: game)
         }
     }
 
@@ -188,7 +177,7 @@ struct HowToPlayView: View {
                     howToRow(icon: "iphone.gen3.radiowaves.left.and.right",
                              text: "UWB 対応の iPhone 2台でアプリを開き「はじめる」をタップすると、自動でつながります")
                     howToRow(icon: "slider.horizontal.3",
-                             text: "隠す時間・制限時間はタイトルの「設定」やロビーで変更でき、相手の端末にも同期されます")
+                             text: "隠す時間・制限時間はロビーで変更でき、相手の端末にも同期されます")
                 }
                 Section("あそびかた") {
                     howToRow(icon: "shippingbox.fill",
@@ -257,6 +246,16 @@ struct LobbyView: View {
                 .foregroundStyle(.secondary)
             statusRow
                 .padding(.top, 8)
+            if game.nearby.status == .searching || game.nearby.status == .connecting {
+                Button {
+                    game.restartConnection()
+                } label: {
+                    Label("接続をやり直す", systemImage: "arrow.clockwise")
+                        .font(.footnote)
+                }
+                .buttonStyle(.bordered)
+                .padding(.top, 4)
+            }
             Spacer()
             GameSettingsSection(game: game)
                 .padding(.horizontal)
@@ -343,9 +342,9 @@ struct LobbyView: View {
     }
 }
 
-// MARK: - ゲーム設定（ロビーとタイトルの設定シートで共用）
+// MARK: - ゲーム設定
 
-/// モード・隠す時間・制限時間の設定。UserDefaults に保存され、接続中なら相手端末にも同期される
+/// 隠す時間・制限時間の設定。UserDefaults に保存され、相手端末にも同期される
 struct GameSettingsSection: View {
     @ObservedObject var game: GameManager
 
@@ -388,31 +387,6 @@ struct GameSettingsSection: View {
             get: { game.huntDuration },
             set: { game.updateSettings(hideDuration: game.hideDuration, huntDuration: $0) }
         )
-    }
-}
-
-/// タイトル画面から開くゲーム設定シート
-struct GameSettingsSheet: View {
-    @ObservedObject var game: GameManager
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    GameSettingsSection(game: game)
-                        .padding(.vertical, 4)
-                } footer: {
-                    Text("設定は保存され、次のゲームから使われます。ロビーでも変更でき、接続中は相手の端末にも同期されます")
-                }
-            }
-            .navigationTitle("ゲーム設定")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                Button("閉じる") { dismiss() }
-            }
-        }
-        .presentationDetents([.medium])
     }
 }
 
