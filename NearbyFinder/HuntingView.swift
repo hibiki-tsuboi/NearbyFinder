@@ -17,6 +17,15 @@ struct HuntingView: View {
     private var direction: simd_float3? { game.nearby.direction }
     private var isNear: Bool { (distance ?? .infinity) < Self.nearRange }
 
+    /// 矢印の回転角（ラジアン、正 = 右）。U1 世代（iPhone 11〜13）は 3D の direction から、
+    /// iPhone 14 以降は camera assistance の horizontalAngle から得る。
+    /// direction はカメラ座標系（+x 右 / -z 前方）なので atan2 で方位角に変換する
+    private var arrowAngle: Double? {
+        if let direction { return Double(atan2(direction.x, -direction.z)) }
+        if let angle = game.nearby.horizontalAngle { return Double(angle) }
+        return nil
+    }
+
     var body: some View {
         ZStack {
             background.ignoresSafeArea()
@@ -74,18 +83,18 @@ struct HuntingView: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white.opacity(0.7))
             }
-        } else if let direction {
+        } else if let arrowAngle {
             Image(systemName: "arrow.up")
                 .font(.system(size: 150, weight: .bold))
                 .foregroundStyle(.white)
-                .rotationEffect(.radians(azimuth(of: direction)))
-                .animation(.easeInOut(duration: 0.2), value: azimuth(of: direction))
+                .rotationEffect(.radians(arrowAngle))
+                .animation(.easeInOut(duration: 0.2), value: arrowAngle)
         } else if distance != nil {
             VStack(spacing: 16) {
                 Image(systemName: "dot.radiowaves.left.and.right")
                     .font(.system(size: 64))
                     .foregroundStyle(.white.opacity(0.7))
-                Text(game.nearby.directionHint ?? "iPhone をゆっくり左右に動かして\n方向をさがそう")
+                Text(game.nearby.directionHint ?? "iPhone を前にかざして、ゆっくり\n左右に動かすと矢印が出るよ")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white.opacity(0.7))
             }
@@ -128,11 +137,6 @@ struct HuntingView: View {
         guard let distance, distance < 1.5 else { return .black }
         let t = 1 - Double((min(max(distance, 0.35), 1.5) - 0.35) / 1.15)   // 0 = 遠い, 1 = 近い
         return Color(hue: 0.36, saturation: 0.85, brightness: 0.5 * t)
-    }
-
-    /// カメラ座標系（+x 右 / -z 前方）の方向ベクトルを画面上の回転角に変換する
-    private func azimuth(of direction: simd_float3) -> Double {
-        Double(atan2(direction.x, -direction.z))
     }
 }
 

@@ -29,6 +29,10 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var peerName: String?
     @Published private(set) var distance: Float?
     @Published private(set) var direction: simd_float3?
+    /// camera assistance 由来の水平方位角（ラジアン）。iPhone 14 以降は UWB 単体の
+    /// direction が常に nil（supportsDirectionMeasurement == false）のため、
+    /// 矢印表示はこの値にフォールバックする。ARKit の収束後にのみ得られる
+    @Published private(set) var horizontalAngle: Float?
     @Published private(set) var note: String?
     /// 方向が取れないときのユーザー向けヒント（camera assistance の収束状態から生成）
     @Published private(set) var directionHint: String?
@@ -90,6 +94,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
         peerName = nil
         distance = nil
         direction = nil
+        horizontalAngle = nil
         directionHint = nil
         note = nil
         if status != .unsupported && status != .denied {
@@ -159,6 +164,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
             self.peerName = nil
             self.distance = nil
             self.direction = nil
+            self.horizontalAngle = nil
             self.directionHint = nil
             if self.status != .unsupported && self.status != .denied {
                 self.status = .searching
@@ -235,9 +241,11 @@ extension NearbySessionManager: NISessionDelegate {
         guard let object = nearbyObjects.first else { return }
         let distance = object.distance
         let direction = object.direction
+        let horizontalAngle = object.horizontalAngle
         Task { @MainActor in
             self.distance = distance
             self.direction = direction
+            self.horizontalAngle = horizontalAngle
         }
     }
 
@@ -245,6 +253,7 @@ extension NearbySessionManager: NISessionDelegate {
         Task { @MainActor in
             self.distance = nil
             self.direction = nil
+            self.horizontalAngle = nil
             switch reason {
             case .peerEnded:
                 // 相手側がセッションを終了した。作り直してトークンを再交換する
@@ -310,6 +319,7 @@ extension NearbySessionManager: NISessionDelegate {
         Task { @MainActor in
             self.distance = nil
             self.direction = nil
+            self.horizontalAngle = nil
             if (error as? NIError)?.code == .userDidNotAllow {
                 // 再起動すると拒否 → 即無効化のループになるため、ここで止める
                 self.status = .denied
@@ -355,6 +365,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var peerName: String?
     @Published private(set) var distance: Float?
     @Published private(set) var direction: simd_float3?
+    @Published private(set) var horizontalAngle: Float?
     @Published private(set) var note: String?
     @Published private(set) var directionHint: String?
 
