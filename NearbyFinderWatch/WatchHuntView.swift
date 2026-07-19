@@ -6,7 +6,8 @@
 import SwiftUI
 import WatchKit
 
-/// 宝の iPhone までの距離を表示し、近づくほど速い手首ハプティクスを鳴らす。
+/// ゲームの進行に合わせて表示を切り替え、探索中は宝までの距離＋手首ハプティクスで誘導する。
+/// iPhone から状態が届いていないとき（gamePhase == nil）は距離をそのまま表示する。
 struct WatchHuntView: View {
     @StateObject private var ranger = WatchRanger()
 
@@ -20,13 +21,43 @@ struct WatchHuntView: View {
         .task { await hapticLoop() }
     }
 
+    /// 探索中（またはゲーム状態未受信）だけ距離を見せる
+    private var shouldShowDistance: Bool {
+        ranger.gamePhase == nil || ranger.gamePhase == "hunting"
+    }
+
     @ViewBuilder
     private var content: some View {
-        switch ranger.state {
-        case .unsupported:
+        if ranger.state == .unsupported {
             Text("この Apple Watch は UWB に対応していません\n（Series 6 以降 / Ultra が必要）")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
+        } else if ranger.gamePhase == "finished" {
+            resultContent
+        } else if ranger.gamePhase == "hiding" {
+            VStack(spacing: 8) {
+                Text("🤫")
+                    .font(.system(size: 40))
+                Text(ranger.gameRole == "treasure" ? "iPhone を隠そう！" : "相手が隠しています…\n目を閉じて待とう")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+            }
+        } else if ranger.gamePhase == "lobby" {
+            VStack(spacing: 8) {
+                Image(systemName: "sparkle.magnifyingglass")
+                    .font(.title2)
+                Text("iPhone で役割を選ぶと\nゲームが始まるよ")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+            }
+        } else {
+            rangingContent
+        }
+    }
+
+    @ViewBuilder
+    private var rangingContent: some View {
+        switch ranger.state {
         case .waitingForPhone:
             VStack(spacing: 8) {
                 ProgressView()
@@ -41,13 +72,20 @@ struct WatchHuntView: View {
                     .font(.footnote)
                     .multilineTextAlignment(.center)
             }
-        case .ranging:
+        default:
             if let distance = ranger.distance {
                 VStack(spacing: 4) {
+                    if let deadline = ranger.deadline {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text("残り \(remainingText(deadline: deadline, now: context.date))")
+                                .font(.footnote.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Text(distanceText(distance))
                         .font(.system(size: 42, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                    Text("宝までの距離")
+                    Text(ranger.gameRole == "treasure" ? "ハンターまでの距離" : "宝までの距離")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -62,21 +100,42 @@ struct WatchHuntView: View {
         }
     }
 
+    @ViewBuilder
+    private var resultContent: some View {
+        let hunterWon = ranger.outcome == "hunterWon"
+        let isTreasure = ranger.gameRole == "treasure"
+        VStack(spacing: 8) {
+            Text(hunterWon ? "🎉" : (isTreasure ? "🏆" : "⏰"))
+                .font(.system(size: 40))
+            Text(hunterWon ? (isTreasure ? "見つかった！" : "発見！")
+                           : (isTreasure ? "逃げ切った！" : "時間切れ…"))
+                .font(.headline)
+            Text("次のゲームは iPhone から")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private func distanceText(_ distance: Float) -> String {
         distance < 1 ? "\(Int((distance * 100).rounded()))cm" : String(format: "%.1fm", distance)
     }
 
+    private func remainingText(deadline: Date, now: Date) -> String {
+        let seconds = max(0, Int(deadline.timeIntervalSince(now).rounded()))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
     /// 近いほど緑に光る（iPhone の探索画面と同じ表現）
     private var background: Color {
-        guard let distance = ranger.distance, distance < 1.5 else { return .black }
+        guard shouldShowDistance, let distance = ranger.distance, distance < 1.5 else { return .black }
         let t = 1 - Double((min(max(distance, 0.35), 1.5) - 0.35) / 1.15)
         return Color(hue: 0.36, saturation: 0.85, brightness: 0.5 * t)
     }
 
-    /// 距離に応じて間隔が変わる手首ハプティクス
+    /// 距離に応じて間隔が変わる手首ハプティクス（探索中のみ）
     private func hapticLoop() async {
         while !Task.isCancelled {
-            guard ranger.state == .ranging, let distance = ranger.distance else {
+            guard shouldShowDistance, ranger.state == .ranging, let distance = ranger.distance else {
                 try? await Task.sleep(for: .seconds(0.5))
                 continue
             }

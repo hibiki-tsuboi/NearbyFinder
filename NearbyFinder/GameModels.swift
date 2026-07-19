@@ -27,16 +27,29 @@ enum GameOutcome: Equatable {
 /// MultipeerConnectivity で 2 台間を流れるメッセージ。
 /// priority は両者が同時に同じ役を選んだときのタイブレークに使う。
 enum GameMessage: Codable {
+    /// NI の discovery token（NearbySessionManager が処理する）
     case discoveryToken(Data)
-    case roleSelected(PlayerRole, priority: UInt32)
+    /// 役割選択。選んだ側の設定（隠す時間・制限時間）がそのラウンドの正とする
+    case roleSelected(PlayerRole, priority: UInt32, hideDuration: Int, huntDuration: Int)
+    /// ロビーでの設定変更の同期（後勝ち）
+    case settingsChanged(hideDuration: Int, huntDuration: Int)
     case gameStarted
     case found
     case timeUp
     case playAgain
+    /// 役割を交代して次のラウンドを開始する
+    case rematch
     /// 自分のペアの Apple Watch の NI トークン（相手 iPhone が Watch と測距するために送る）
     case watchToken(Data)
     /// 上記への返信。相手 iPhone が Watch 用に作ったセッションのトークン（Watch の持ち主経由で Watch へ渡す）
     case watchPeerToken(Data)
+}
+
+/// 探索中の距離の記録（1 秒に 1 サンプル）。リザルトの接近グラフに使う。
+struct DistanceSample: Identifiable, Equatable {
+    var id: Int { seconds }
+    let seconds: Int     // 探索開始からの経過秒
+    let distance: Float
 }
 
 /// 端末ローカルに保存する戦績。決着時に両端末がそれぞれ自分の分を更新する。

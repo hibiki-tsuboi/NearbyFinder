@@ -60,9 +60,25 @@ final class MultipeerSession: NSObject {
         startRetryLoop()
     }
 
+    /// 通信を止める。次の start() で再開できるよう、新しいトランスポートを組み直しておく
+    /// （tearDown 済みの advertiser/browser は delegate が外れていて再利用できない）
     func stop() {
         retryTask?.cancel()
         tearDownTransport()
+        let transport = Self.makeTransport()
+        myPeerID = transport.peerID
+        session = transport.session
+        advertiser = transport.advertiser
+        browser = transport.browser
+        wireDelegates()
+        discovered.removeAll()
+        consecutiveFailures = 0
+    }
+
+    /// 2 台のうちどちらか一方だけが代表して行う処理（招待、接続時の設定同期など）を
+    /// 自分が担当するかどうか。displayName の比較なので両端末で必ず一方だけ true になる
+    func isDesignatedLeader(vs peer: MCPeerID) -> Bool {
+        myPeerID.displayName > peer.displayName
     }
 
     func send(_ data: Data) {
@@ -159,8 +175,7 @@ final class MultipeerSession: NSObject {
 
     private func inviteIfResponsible(_ peer: MCPeerID, firstSeen: Date) {
         guard session.connectedPeers.isEmpty else { return }
-        let isDesignatedInviter = myPeerID.displayName > peer.displayName
-        if isDesignatedInviter || Date().timeIntervalSince(firstSeen) > Self.inviteGracePeriod {
+        if isDesignatedLeader(vs: peer) || Date().timeIntervalSince(firstSeen) > Self.inviteGracePeriod {
             browser.invitePeer(peer, to: session, withContext: nil, timeout: 8)
         }
     }

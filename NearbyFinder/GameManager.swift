@@ -11,34 +11,51 @@ import UIKit
 
 /// ゲーム全体の状態遷移（ロビー → 隠す → 探索 → 決着）を管理する。
 final class GameManager: ObservableObject {
-    static let hideDuration = 60
-    static let huntDuration = 300   // 探索の制限時間（秒）。時間切れは宝役の勝ち
+    /// 先にこのラウンド数を取ったほうがシリーズ優勝
+    static let seriesTarget = 3
 
     @Published private(set) var phase: GamePhase = .lobby
     @Published private(set) var role: PlayerRole?
     @Published private(set) var outcome: GameOutcome?
-    @Published private(set) var hideSecondsRemaining = GameManager.hideDuration
+    /// 役割決定直後の発表演出を表示中か（hiding の先頭約 2 秒、両端末で出す）
+    @Published private(set) var isRevealingRole = false
+    @Published private(set) var hideSecondsRemaining: Int
+    /// 隠す猶予（秒）。ロビーで変更でき、相手と同期して UserDefaults に保存される
+    @Published private(set) var hideDuration: Int
+    /// 探索の制限時間（秒）。時間切れは宝役の勝ち
+    @Published private(set) var huntDuration: Int
+    /// このシリーズで自分／相手が取ったラウンド数（ロビーに戻るとリセット）
+    @Published private(set) var myRoundWins = 0
+    @Published private(set) var peerRoundWins = 0
     @Published private(set) var huntStartDate: Date?
     @Published private(set) var huntDeadline: Date?
     @Published private(set) var finishDate: Date?
     @Published private(set) var stats = GameStats.load()
     @Published private(set) var isNewBest = false
+    /// 探索中の距離の推移（リザルトの接近グラフ用、1 秒 1 サンプル）
+    @Published private(set) var distanceHistory: [DistanceSample] = []
 
     let nearby = NearbySessionManager()
 
     private let feedback = ProximityFeedback()
     private var countdownTask: Task<Void, Never>?
     private var huntTimerTask: Task<Void, Never>?
+    private var revealTask: Task<Void, Never>?
     private var myRolePriority: UInt32 = 0
     private var cancellables: Set<AnyCancellable> = []
 
     init() {
+        let savedHide = UserDefaults.standard.integer(forKey: "hideDuration")
+        let savedHunt = UserDefaults.standard.integer(forKey: "huntDuration")
+        hideDuration = savedHide > 0 ? savedHide : 60
+        huntDuration = savedHunt > 0 ? savedHunt : 300
+        hideSecondsRemaining = savedHide > 0 ? savedHide : 60
         // ネストした ObservableObject の変更をビューへ伝搬させる
         nearby.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         nearby.$distance
-            .sink { [weak self] distance in self?.feedback.distance = distance }
+            .sink { [weak self] distance in self?.distanceUpdated(distance) }
             .store(in: &cancellables)
         nearby.$status
             .sink { [weak self] status in
@@ -50,9 +67,29 @@ final class GameManager: ObservableObject {
             }
             .store(in: &cancellables)
         nearby.onGameMessage = { [weak self] message in self?.handle(message) }
+        // 接続確立時、代表側（両端末で必ず一方だけ）が自分の設定を送って表示を揃える。
+        // タイトル画面で各自が別々に設定したまま接続すると、誰かがピッカーを触るまで
+        // 両端末のロビー表示が食い違ったままになるため
+        nearby.onConnected = { [weak self] isLeader in
+            guard let self, isLeader, self.phase == .lobby else { return }
+            self.nearby.send(.settingsChanged(hideDuration: self.hideDuration, huntDuration: self.huntDuration))
+        }
     }
 
     func start() {
+        nearby.start()
+    }
+
+    /// タイトル画面へ戻るとき、ゲーム状態をリセットして通信を止める
+    func stop() {
+        resetToLobby()
+        nearby.stop()
+    }
+
+    /// ロビーで接続が進まないときの救済。通信一式を作り直して探索からやり直す
+    func restartConnection() {
+        guard phase == .lobby else { return }
+        nearby.stop()
         nearby.start()
     }
 
@@ -62,8 +99,29 @@ final class GameManager: ObservableObject {
         guard phase == .lobby, role == nil, nearby.status == .ranging else { return }
         role = selected
         myRolePriority = UInt32.random(in: .min ... .max)
-        nearby.send(.roleSelected(selected, priority: myRolePriority))
+        nearby.send(.roleSelected(selected, priority: myRolePriority, hideDuration: hideDuration, huntDuration: huntDuration))
         startHiding()
+    }
+
+    /// ロビーでの設定変更。相手にも同期し、次回のために保存する
+    func updateSettings(hideDuration: Int, huntDuration: Int, broadcast: Bool = true) {
+        self.hideDuration = hideDuration
+        self.huntDuration = huntDuration
+        if phase == .lobby {
+            hideSecondsRemaining = hideDuration
+        }
+        UserDefaults.standard.set(hideDuration, forKey: "hideDuration")
+        UserDefaults.standard.set(huntDuration, forKey: "huntDuration")
+        if broadcast {
+            nearby.send(.settingsChanged(hideDuration: hideDuration, huntDuration: huntDuration))
+        }
+    }
+
+    /// 役割を交代して次のラウンドを始める
+    func rematch() {
+        guard phase == .finished else { return }
+        nearby.send(.rematch)
+        startNextRound()
     }
 
     /// 宝役が隠し終えたとき、猶予時間を待たずに探索を開始する
@@ -89,7 +147,17 @@ final class GameManager: ObservableObject {
 
     private func startHiding() {
         phase = .hiding
-        hideSecondsRemaining = Self.hideDuration
+        hideSecondsRemaining = hideDuration
+        // 相手のタップで受け身側の画面が前触れなく切り替わるため、
+        // カウントダウンの前に「あなたは○○」の発表を挟んで唐突さを消す
+        isRevealingRole = true
+        revealTask?.cancel()
+        revealTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, !Task.isCancelled else { return }
+            self.isRevealingRole = false
+        }
+        syncWatch()
         countdownTask?.cancel()
         countdownTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -109,15 +177,18 @@ final class GameManager: ObservableObject {
         countdownTask?.cancel()
         phase = .hunting
         huntStartDate = Date()
-        huntDeadline = Date().addingTimeInterval(TimeInterval(Self.huntDuration))
+        huntDeadline = Date().addingTimeInterval(TimeInterval(huntDuration))
+        distanceHistory = []
+        syncWatch()
         if role == .hunter {
             feedback.startProximityLoop()
         }
         // 時間切れの判定は「みつけた！」ボタンを持つ宝側が代表して行い、結果を相手へ送る
         if role == .treasure {
+            let duration = huntDuration
             huntTimerTask?.cancel()
             huntTimerTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(Double(Self.huntDuration)))
+                try? await Task.sleep(for: .seconds(Double(duration)))
                 guard let self, !Task.isCancelled, self.phase == .hunting else { return }
                 self.nearby.send(.timeUp)
                 self.finish(with: .treasureWon)
@@ -138,6 +209,13 @@ final class GameManager: ObservableObject {
         updated.save()
         stats = updated
 
+        // シリーズのラウンド集計（自分の役割が勝ったかで判定するため両端末で一致する）
+        if let role {
+            let iWon = (outcome == .hunterWon && role == .hunter) || (outcome == .treasureWon && role == .treasure)
+            if iWon { myRoundWins += 1 } else { peerRoundWins += 1 }
+        }
+        syncWatch()
+
         switch outcome {
         case .hunterWon: feedback.playVictory()
         case .treasureWon: feedback.playTimeUp()
@@ -147,30 +225,72 @@ final class GameManager: ObservableObject {
     private func resetToLobby() {
         countdownTask?.cancel()
         huntTimerTask?.cancel()
+        revealTask?.cancel()
         feedback.shutdown()
         phase = .lobby
         role = nil
+        isRevealingRole = false
         outcome = nil
         isNewBest = false
-        hideSecondsRemaining = Self.hideDuration
+        hideSecondsRemaining = hideDuration
         huntStartDate = nil
         huntDeadline = nil
         finishDate = nil
+        distanceHistory = []
+        myRoundWins = 0
+        peerRoundWins = 0
+        syncWatch()
+    }
+
+    /// 役割を入れ替えて次のラウンドへ。シリーズ決着後なら勝敗カウントをリセットする
+    private func startNextRound() {
+        if myRoundWins >= Self.seriesTarget || peerRoundWins >= Self.seriesTarget {
+            myRoundWins = 0
+            peerRoundWins = 0
+        }
+        role = role?.opposite
+        outcome = nil
+        isNewBest = false
+        huntStartDate = nil
+        huntDeadline = nil
+        finishDate = nil
+        distanceHistory = []
+        startHiding()
+    }
+
+    /// ペアの Apple Watch へゲーム状態を中継する（探索中以外は Watch 側が距離を隠す）
+    private func syncWatch() {
+        let phaseName = switch phase {
+        case .lobby: "lobby"
+        case .hiding: "hiding"
+        case .hunting: "hunting"
+        case .finished: "finished"
+        }
+        let outcomeName: String? = switch outcome {
+        case .some(.hunterWon): "hunterWon"
+        case .some(.treasureWon): "treasureWon"
+        case nil: nil
+        }
+        nearby.relayGameStateToWatch(phase: phaseName, role: role?.rawValue, deadline: huntDeadline, outcome: outcomeName)
     }
 
     private func handle(_ message: GameMessage) {
         switch message {
         case .discoveryToken, .watchToken, .watchPeerToken:
             break   // NearbySessionManager が処理済み
-        case .roleSelected(let peerRole, let peerPriority):
+        case .roleSelected(let peerRole, let peerPriority, let hide, let hunt):
             if role == nil {
                 guard phase == .lobby else { break }
+                // 役割を選んだ側の設定をそのラウンドの正とする
+                updateSettings(hideDuration: hide, huntDuration: hunt, broadcast: false)
                 role = peerRole.opposite
                 startHiding()
             } else if peerRole == role, peerPriority > myRolePriority {
                 // 両者が同時に同じ役を選んだ場合は優先度の高い側に譲る
                 role = peerRole.opposite
             }
+        case .settingsChanged(let hide, let hunt):
+            updateSettings(hideDuration: hide, huntDuration: hunt, broadcast: false)
         case .gameStarted:
             beginHunt()
         case .found:
@@ -179,6 +299,20 @@ final class GameManager: ObservableObject {
             finish(with: .treasureWon)
         case .playAgain:
             resetToLobby()
+        case .rematch:
+            if phase == .finished {
+                startNextRound()
+            }
+        }
+    }
+
+    private func distanceUpdated(_ distance: Float?) {
+        feedback.distance = distance
+        guard phase == .hunting, let distance, let start = huntStartDate else { return }
+        // 接近グラフ用に 1 秒 1 サンプルで記録する（両端末とも自分の測定値を記録）
+        let seconds = Int(Date().timeIntervalSince(start))
+        if distanceHistory.last?.seconds != seconds {
+            distanceHistory.append(DistanceSample(seconds: seconds, distance: distance))
         }
     }
 

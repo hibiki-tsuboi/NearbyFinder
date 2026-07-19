@@ -35,9 +35,12 @@ final class NearbySessionManager: NSObject, ObservableObject {
 
     /// discoveryToken 以外のゲームメッセージを上位層（GameManager）へ渡す
     var onGameMessage: ((GameMessage) -> Void)?
+    /// MC 接続確立時に呼ばれる。isLeader は両端末で必ず一方だけ true（代表側）
+    var onConnected: ((_ isLeader: Bool) -> Void)?
 
     private let multipeer = MultipeerSession()
     private var niSession: NISession?
+    private var isStarted = false
     private var isPeerConnected = false
     private var searchHintTask: Task<Void, Never>?
     /// ARKit 連携（camera assistance）で方向の精度と取得率を上げる。カメラ拒否時は false に落とす
@@ -49,11 +52,21 @@ final class NearbySessionManager: NSObject, ObservableObject {
     private var watchPeerSession: NISession?
     private let watchPeerDelegate = WatchPeerSessionDelegate()
 
+    /// start() を呼ぶ前（タイトル画面）から参照できる UWB 対応判定
+    var isDeviceSupported: Bool {
+        NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
+    }
+
     func start() {
-        guard NISession.deviceCapabilities.supportsPreciseDistanceMeasurement else {
+        guard isDeviceSupported else {
             status = .unsupported
             return
         }
+        guard !isStarted else {
+            refreshDiscoveryIfNeeded()
+            return
+        }
+        isStarted = true
         configureMultipeerHandlers()
         startNISession()
         multipeer.start()
@@ -62,6 +75,35 @@ final class NearbySessionManager: NSObject, ObservableObject {
             self?.send(.watchToken(data))
         }
         watchRelay.start()
+    }
+
+    /// タイトル画面へ戻るときに通信を全て止める。start() で再開できる
+    func stop() {
+        isStarted = false
+        searchHintTask?.cancel()
+        multipeer.stop()
+        niSession?.invalidate()
+        niSession = nil
+        watchPeerSession?.invalidate()
+        watchPeerSession = nil
+        isPeerConnected = false
+        peerName = nil
+        distance = nil
+        direction = nil
+        directionHint = nil
+        note = nil
+        if status != .unsupported && status != .denied {
+            status = .searching
+        }
+    }
+
+    /// ペアの Apple Watch へゲーム状態を中継する
+    func relayGameStateToWatch(phase: String, role: String?, deadline: Date?, outcome: String?) {
+        var state: [String: Any] = ["phase": phase]
+        if let role { state["role"] = role }
+        if let deadline { state["deadline"] = deadline }
+        if let outcome { state["outcome"] = outcome }
+        watchRelay.updateGameState(state)
     }
 
     /// アプリがフォアグラウンドへ戻ったときなどに、未接続なら探索をやり直す
@@ -108,6 +150,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
             if let watchToken = self.watchRelay.watchToken {
                 self.send(.watchToken(watchToken))
             }
+            self.onConnected?(self.multipeer.isDesignatedLeader(vs: peer))
         }
         multipeer.onPeerDisconnected = { [weak self] _ in
             guard let self else { return }
@@ -316,10 +359,15 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var directionHint: String?
 
     var onGameMessage: ((GameMessage) -> Void)?
+    var onConnected: ((_ isLeader: Bool) -> Void)?
+
+    var isDeviceSupported: Bool { false }
 
     func start() {}
+    func stop() {}
     func send(_ message: GameMessage) {}
     func refreshDiscoveryIfNeeded() {}
+    func relayGameStateToWatch(phase: String, role: String?, deadline: Date?, outcome: String?) {}
 }
 
 #endif
