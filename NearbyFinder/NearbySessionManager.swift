@@ -123,7 +123,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
         searchHintTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(15))
             guard let self, !Task.isCancelled, self.status == .searching, self.note == nil else { return }
-            self.note = "見つからないときは、両方の端末で Wi-Fi と Bluetooth がオンか、設定 > プライバシーとセキュリティ > ローカルネットワーク で NearbyFinder が許可されているかを確認してください"
+            self.note = "見つからないときは、両方の端末で Wi-Fi と Bluetooth がオンか、設定 > プライバシーとセキュリティ > ローカルネットワーク で Treasure Radar が許可されているかを確認してください"
         }
     }
 

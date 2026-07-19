@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-NearbyFinder is an iPhone treasure-hunt app built on Nearby Interaction (UWB): one iPhone is hidden, the other finds it using live distance/direction readings. Real functionality requires two physical UWB-capable iPhones (iPhone 11+, not SE); Xcode can also simulate NI between two booted simulators — but simulator NI does NOT exercise the real UWB/AWDL/ARKit paths (see the rebuild note below).
+NearbyFinder (product/display name: **Treasure Radar** — set via `INFOPLIST_KEY_CFBundleDisplayName` on both targets and used in user-facing strings; the project, targets, and bundle IDs keep the NearbyFinder name) is an iPhone treasure-hunt app built on Nearby Interaction (UWB): one iPhone is hidden, the other finds it using live distance/direction readings. Real functionality requires two physical UWB-capable iPhones (iPhone 11+, not SE); Xcode can also simulate NI between two booted simulators — but simulator NI does NOT exercise the real UWB/AWDL/ARKit paths (see the rebuild note below).
 
 - Xcode project: `NearbyFinder.xcodeproj`, targets `NearbyFinder` (iPhone-only: `SUPPORTED_PLATFORMS = iphoneos iphonesimulator`, `TARGETED_DEVICE_FAMILY = 1` — iPad/Mac/Vision have no UWB) and `NearbyFinderWatch` (watchOS companion, embedded with `platformFilter = ios`)
 - Deployment target: iOS/watchOS 26.0 (lowered from the 26.5 template default for release reach); bundle IDs `jp.hibiki.NearbyFinder` / `.watchkitapp`; iPhone is locked to portrait

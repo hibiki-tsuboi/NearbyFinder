@@ -1,10 +1,10 @@
-# NearbyFinder
+# Treasure Radar
 
-iPhone 2 台で遊ぶ宝探しゲームです。片方の iPhone を「宝」として隠し、もう片方の「ハンター」が Nearby Interaction（UWB）のリアルタイム距離・方向表示を頼りに探し出します。Find My の「探す」画面のような矢印 UI、距離に連動したソナー音とハプティクス、AR での発見演出、Apple Watch でのハンター補助表示に対応しています。
+iPhone 2 台で遊ぶ宝探しゲームです（プロジェクト名は NearbyFinder）。片方の iPhone を「宝」として隠し、もう片方の「ハンター」が Nearby Interaction（UWB）のリアルタイム距離・方向表示を頼りに探し出します。Find My の「探す」画面のような矢印 UI、距離に連動したソナー音とハプティクス、Apple Watch でのハンター補助表示に対応しています。データは端末にもネットワークにも一切保存・収集しません。
 
 ## 遊び方
 
-1. 両方の iPhone でアプリを起動し、タイトル画面で「はじめる」をタップすると自動でペアリングされます（ロビー）。タイトル画面には通算成績と「あそびかた」も表示されます
+1. 両方の iPhone でアプリを起動し、タイトル画面で「はじめる」をタップすると自動でペアリングされます（ロビー）。タイトル画面には起動中の成績と「あそびかた」も表示されます（成績はアプリを終了するとリセットされます）
 2. ロビーで隠す時間（30/60/90 秒）・制限時間（3/5/10 分）を設定し、役割を選択
 3. 宝側が iPhone を隠し、ハントを開始
 4. ハンターは矢印と距離表示、音・振動を頼りに捜索。制限時間切れは宝側の勝ち
@@ -18,7 +18,7 @@ iPhone 2 台で遊ぶ宝探しゲームです。片方の iPhone を「宝」と
 
 - UWB（U1/U2 チップ）搭載の iPhone 2 台 — iPhone 11 以降（SE は非対応）
 - 方向矢印について: iPhone 14 以降は UWB 単体の方向測定が廃止されているため、矢印はカメラアシスタンスの収束後（明るい場所で iPhone をかざしてゆっくり動かす）に表示されます。iPhone 11〜13 は即座に表示されます
-- iOS 26.5 以降
+- iOS 26.0 以降
 - 両方のアプリがフォアグラウンドにあること（バックグラウンドに回ると NI セッションが一時停止します）
 - （任意）Apple Watch — ハンター側の手元に距離を表示（watchOS の NI は距離のみで方向は取得できません）
 
@@ -50,10 +50,10 @@ xcodebuild -project NearbyFinder.xcodeproj -scheme NearbyFinder \
 ```
 
 - **`MultipeerSession`** — MultipeerConnectivity の薄いラッパー。ピアの発見と JSON メッセージの交換を担当。接続の安定化（招待の衝突回避、片方向発見のフォールバック、失敗時のトランスポート再構築）を内蔵
-- **`NearbySessionManager`** — `NISession` を所有し、`distance` / `direction` を publish。ディスカバリートークンの交換、中断・復帰、カメラアシスタンスによる方向精度向上、AR 用の `peerWorldTransform` の提供を担当
+- **`NearbySessionManager`** — `NISession` を所有し、`distance` / `direction` / `horizontalAngle` を publish。ディスカバリートークンの交換、中断・復帰、カメラアシスタンスによる方向精度向上を担当
 - **`GameManager`** — ゲーム状態機械（`lobby → hiding → hunting → finished`）。役割の同期、制限時間の監視（宝側が権威）、距離連動ハプティクス、接近グラフ用の距離履歴の記録、Watch への状態中継
 - **`GameAudio`** — 効果音は AVAudioEngine で実行時に合成（音声アセットなし）。マナーモードを尊重する `.ambient` カテゴリ
-- **Views** — `ContentView`（フェーズ切替）、`HuntingView`（矢印の捜索 UI）、`ARTreasureView`（RealityKit の AR 演出）
+- **Views** — `ContentView`（タイトル・ロビー・リザルトなどフェーズ切替）、`HuntingView`（矢印の捜索 UI）
 - **Watch 対応** — watchOS には MultipeerConnectivity がないため、トークンを Watch → 自分の iPhone → 相手の iPhone と中継し、相手 iPhone が Watch 用の第 2 `NISession` を開いて Watch ↔ iPhone 間で直接 UWB 測距します
 
 詳しい設計上の制約・経緯は [CLAUDE.md](CLAUDE.md) を参照してください。
