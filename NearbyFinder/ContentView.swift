@@ -94,7 +94,7 @@ struct TitleView: View {
                         .foregroundStyle(.white)
                 }
                 .frame(height: 200)
-                Text("NearbyFinder")
+                Text("Treasure Radar")
                     .font(.system(size: 40, weight: .black, design: .rounded))
                     .foregroundStyle(.white)
                 Text("iPhone かくれんぼ")
@@ -243,7 +243,7 @@ struct LobbyView: View {
             Image(systemName: "sparkle.magnifyingglass")
                 .font(.system(size: 56))
                 .foregroundStyle(.tint)
-            Text("NearbyFinder")
+            Text("Treasure Radar")
                 .font(.largeTitle.bold())
             Text("iPhone かくれんぼ")
                 .font(.subheadline)
