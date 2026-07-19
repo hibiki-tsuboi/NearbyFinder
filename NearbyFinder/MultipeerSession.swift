@@ -14,10 +14,15 @@ import UIKit
 /// discovery token などの小さなデータを交換するための薄いラッパー。
 ///
 /// 接続戦略:
+/// - 発見した互換ピアはすべて記録し、接続試行は常に 1 台ずつ行う
 /// - 通常は displayName の大きい側だけが招待し、同時招待によるハンドシェイク衝突を避ける
 /// - 発見から猶予時間を過ぎても未接続なら反対側からも招待する（探索が片方向しか
 ///   成功しないケースへの保険。片側固定だけだとデッドロックする）
-/// - 未接続の間は短い周期で再招待し、失敗が続いたらトランスポート一式を作り直す
+/// - 招待に応答しない相手（実機の Bonjour キャッシュに残った、終了済みアプリの
+///   古い広告 = ゴースト）は一定時間候補から外して次の候補を試す。ゴーストに
+///   固定されて生きている相手を拒否し続けないよう、停滞した試行は生きた相手
+///   からの招待で置き換える
+/// - 未接続の間は短い周期で再試行し、失敗が続いたらトランスポート一式を作り直す
 ///   （MC は接続失敗後に内部状態が壊れたままになることがある）
 final class MultipeerSession: NSObject {
     static let serviceType = "nearbyfinder"
@@ -30,6 +35,7 @@ final class MultipeerSession: NSObject {
 
     private struct DiscoveredPeer {
         let firstSeen: Date
+        var lastSeen: Date
         let instanceID: UUID
     }
 
@@ -52,12 +58,17 @@ final class MultipeerSession: NSObject {
     private var advertiser: MCNearbyServiceAdvertiser
     private var browser: MCNearbyServiceBrowser
 
-    /// 発見済みピアと最初に発見した時刻
+    /// 発見済みの互換ピア。応答しない古い広告が混ざっている前提で、招待時に選別する
     private var discovered: [MCPeerID: DiscoveredPeer] = [:]
-    /// 自動接続の候補は常に 1 台だけに固定する。同じ serviceType の第三者や、
-    /// 再構築前の古い広告へ並行接続しないためのロック。
+    /// 進行中の接続試行の相手。試行は常に 1 台ずつ行い、同じ serviceType の
+    /// 第三者や再構築前の古い広告へ並行接続しない。
     private var candidatePeer: MCPeerID?
     private var candidateInstanceID: UUID?
+    /// 招待に応答しなかった端末（instanceID）と失敗時刻。実機では終了済みアプリの
+    /// Bonjour 広告がしばらくキャッシュに残り、生きた相手より先に発見されることが
+    /// ある。応答しない広告を一定時間候補から外し、全候補を順番に試せるようにする
+    ///（最初に見つけた 1 台への固定だけだと、ゴースト相手に永遠に繋がらない）。
+    private var recentInviteFailures: [UUID: Date] = [:]
     /// 招待送信中のピアと送信時刻。タイムアウト前に同じ相手へ招待を重ねると
     /// MC のハンドシェイクが壊れることがあるため、返答があるまで再招待しない
     private var pendingInvites: [MCPeerID: Date] = [:]
@@ -91,10 +102,19 @@ final class MultipeerSession: NSObject {
     private static let inviteTimeout: TimeInterval = 8
     /// MC が招待タイムアウト後の state callback を返すまでの追加猶予
     private static let invitationCallbackGrace: TimeInterval = 2
-    /// 誰も見つからないまま探索を張り直すまでの時間
-    private static let discoveryRefreshInterval: TimeInterval = 12
+    /// 招待できる相手が誰もいないまま探索を張り直すまでの時間。実機の AWDL は
+    /// 探索の張り直しが多すぎるとスロットリングされるため、頻度は控えめにする
+    private static let discoveryRefreshInterval: TimeInterval = 20
     /// MCSession が .connecting のまま遷移しない場合にトランスポートを作り直すまでの時間
     private static let connectingTimeout: TimeInterval = 15
+    /// これ以上応答を待った招待が失敗したら、相手を終了済みプロセスの古い広告
+    ///（ゴースト）とみなす。即時の拒否（= 生きている）と区別するための下限
+    private static let unansweredInviteThreshold: TimeInterval = 6
+    /// ゴーストとみなした相手を候補から外しておく時間
+    private static let inviteFailureCooldown: TimeInterval = 25
+    /// 進行中の handshake を、生きた相手からの招待で置き換えるまでの保護時間。
+    /// これより古い .connecting は停滞とみなし、招待の受諾を優先する
+    private static let connectingTakeoverProtection: TimeInterval = 4
     private static let keepaliveInterval: TimeInterval = 5
     private static let keepaliveTimeout: TimeInterval = 20
     private static let foregroundGracePeriod: TimeInterval = 20
@@ -117,6 +137,7 @@ final class MultipeerSession: NSObject {
 
     func start() {
         isApplicationActive = true
+        recentInviteFailures.removeAll()
         advertiser.startAdvertisingPeer()
         browser.startBrowsingForPeers()
         lastDiscoveryRefresh = Date()
@@ -378,18 +399,41 @@ final class MultipeerSession: NSObject {
         ))
     }
 
-    private func lockCandidate(_ peer: MCPeerID, instanceID: UUID, source: String) -> Bool {
-        if let candidatePeer, let candidateInstanceID {
-            let matches = candidatePeer == peer && candidateInstanceID == instanceID
-            if !matches {
-                log.info("candidate ignore: source=\(source, privacy: .public) peer=\(peer.displayName, privacy: .public) id=\(String(instanceID.uuidString.prefix(8)), privacy: .public) lockedPeer=\(candidatePeer.displayName, privacy: .public)")
-            }
-            return matches
+    /// 発見済みの中から次に招待する相手を 1 台選ぶ。応答しなかった広告は一定時間
+    /// 除外し、より新しく見つかった（= いま生きている可能性が高い。キャッシュ由来の
+    /// 古い広告は探索開始直後にまとめて届く）ものを優先する。
+    private func pickInviteCandidate() -> (peer: MCPeerID, entry: DiscoveredPeer)? {
+        let now = Date()
+        let eligible = discovered.filter { _, entry in
+            guard let failedAt = recentInviteFailures[entry.instanceID] else { return true }
+            return now.timeIntervalSince(failedAt) > Self.inviteFailureCooldown
         }
-        candidatePeer = peer
-        candidateInstanceID = instanceID
-        log.info("candidate lock: source=\(source, privacy: .public) peer=\(peer.displayName, privacy: .public) id=\(String(instanceID.uuidString.prefix(8)), privacy: .public)")
-        return true
+        let best = eligible.max { a, b in
+            if a.value.lastSeen != b.value.lastSeen { return a.value.lastSeen < b.value.lastSeen }
+            return a.value.instanceID.uuidString < b.value.instanceID.uuidString
+        }
+        return best.map { ($0.key, $0.value) }
+    }
+
+    /// 招待に応答しなかった相手をしばらく候補から外す（ゴースト対策）
+    private func markInviteFailure(_ peer: MCPeerID) {
+        guard let instanceID = discovered[peer]?.instanceID
+                ?? (candidatePeer == peer ? candidateInstanceID : nil)
+        else { return }
+        recentInviteFailures[instanceID] = Date()
+        log.info("invite failure: 応答がないため \(Int(Self.inviteFailureCooldown)) 秒候補から除外 peer=\(peer.displayName, privacy: .public)")
+    }
+
+    /// 発見（または招待受信）した互換ピアを記録する
+    private func recordDiscoveredPeer(_ peer: MCPeerID, instanceID: UUID, source: String) {
+        let now = Date()
+        if var entry = discovered[peer] {
+            entry.lastSeen = now
+            discovered[peer] = entry
+        } else {
+            discovered[peer] = DiscoveredPeer(firstSeen: now, lastSeen: now, instanceID: instanceID)
+            log.info("peer record: source=\(source, privacy: .public) peer=\(peer.displayName, privacy: .public) id=\(String(instanceID.uuidString.prefix(8)), privacy: .public) transport=\(self.transportGeneration)")
+        }
     }
 
     private func clearCandidateIfIdle(_ peer: MCPeerID) {
@@ -443,26 +487,31 @@ final class MultipeerSession: NSObject {
         if recoverFromConnectingTimeoutIfNeeded() { return }
         guard session.connectedPeers.isEmpty else { return }
         let now = Date()
-        if pendingInvites.contains(where: {
+        let unansweredInvites = pendingInvites.filter {
             connectingStartedAt[$0.key] == nil
                 && now.timeIntervalSince($0.value) > Self.inviteTimeout + Self.invitationCallbackGrace
-        }) {
+        }
+        if !unansweredInvites.isEmpty {
+            // 招待がタイムアウトしたのに state callback が一度も届かない。相手が
+            // 終了済みの古い広告なら今後も応答は来ないので候補から外した上で、
+            // MC の内部状態が壊れている可能性にも備えてトランスポートを作り直す
+            for peer in unansweredInvites.keys {
+                markInviteFailure(peer)
+            }
             log.warning("invite watchdog: state callback が届かないため再構築 transport=\(self.transportGeneration) attempt=\(self.shortAttemptID, privacy: .public)")
             rebuildTransport(reason: "invitation callback timeout")
             return
         }
         // .connecting 中は招待を重ねない。タイムアウトした場合は上の watchdog が回収する
         guard connectingStartedAt.isEmpty else { return }
-        if discovered.isEmpty {
-            // しばらく誰も見つからないときは Bonjour 探索を張り直す
-            if Date().timeIntervalSince(lastDiscoveryRefresh) > Self.discoveryRefreshInterval {
+        if pendingInvites.isEmpty, pickInviteCandidate() == nil {
+            // 招待できる相手が 1 台もいないときだけ Bonjour 探索を張り直す
+            if now.timeIntervalSince(lastDiscoveryRefresh) > Self.discoveryRefreshInterval {
                 refreshDiscovery()
             }
             return
         }
-        for (peer, discovery) in discovered {
-            inviteIfResponsible(peer, firstSeen: discovery.firstSeen)
-        }
+        tryInviteNextCandidateIfIdle()
     }
 
     /// 2 台のうちどちらか一方だけが代表して行う処理（招待、接続時の設定同期など）を
@@ -471,25 +520,36 @@ final class MultipeerSession: NSObject {
         myPeerID.displayName > peer.displayName
     }
 
-    private func inviteIfResponsible(_ peer: MCPeerID, firstSeen: Date) {
-        guard candidatePeer == peer,
+    /// 接続試行が何も進行していなければ、候補を 1 台選んで招待する。候補のロックは
+    /// 招待を送る（= 試行が始まる）時点で行い、試行の終了（notConnected・喪失・
+    /// watchdog・受諾への切替）で解除される。
+    private func tryInviteNextCandidateIfIdle() {
+        if let candidatePeer, connectedPeer == nil, connectingStartedAt.isEmpty, pendingInvites.isEmpty {
+            // 試行が終わったのに残った迷子のロックは、招待が止まり続ける前に解除する
+            clearCandidateIfIdle(candidatePeer)
+        }
+        guard candidatePeer == nil,
+              connectedPeer == nil,
               session.connectedPeers.isEmpty,
-              connectingStartedAt.isEmpty
+              connectingStartedAt.isEmpty,
+              pendingInvites.isEmpty,
+              let candidate = pickInviteCandidate()
         else { return }
-        // 前の招待が生きているうちは重ねない（失敗・切断・喪失の時点で解除される）
-        if let invitedAt = pendingInvites[peer], Date().timeIntervalSince(invitedAt) < Self.inviteTimeout {
+        // 通常は代表側だけが招待する。非代表側は、探索が片方向しか成功していない
+        // 場合の保険として、発見から猶予時間を過ぎたら招待する
+        guard isDesignatedLeader(vs: candidate.peer)
+                || Date().timeIntervalSince(candidate.entry.firstSeen) > Self.inviteGracePeriod
+        else { return }
+        guard let context = invitationMetadataData() else {
+            log.error("invite: metadata encode 失敗")
             return
         }
-        if isDesignatedLeader(vs: peer) || Date().timeIntervalSince(firstSeen) > Self.inviteGracePeriod {
-            guard let context = invitationMetadataData() else {
-                log.error("invite: metadata encode 失敗")
-                return
-            }
-            connectionAttemptID = UUID()
-            pendingInvites[peer] = Date()
-            log.info("invite send: peer=\(peer.displayName, privacy: .public) transport=\(self.transportGeneration) attempt=\(self.shortAttemptID, privacy: .public) leader=\(self.isDesignatedLeader(vs: peer))")
-            browser.invitePeer(peer, to: session, withContext: context, timeout: Self.inviteTimeout)
-        }
+        candidatePeer = candidate.peer
+        candidateInstanceID = candidate.entry.instanceID
+        connectionAttemptID = UUID()
+        pendingInvites[candidate.peer] = Date()
+        log.info("invite send: peer=\(candidate.peer.displayName, privacy: .public) transport=\(self.transportGeneration) attempt=\(self.shortAttemptID, privacy: .public) leader=\(self.isDesignatedLeader(vs: candidate.peer))")
+        browser.invitePeer(candidate.peer, to: session, withContext: context, timeout: Self.inviteTimeout)
     }
 
     /// .connecting のまま callback が止まった接続試行を検出して作り直す。
@@ -549,6 +609,7 @@ extension MultipeerSession: MCSessionDelegate {
                 self.consecutiveFailures = 0
                 self.consecutiveSendFailures = 0
                 self.pendingInvites.removeAll()
+                self.recentInviteFailures.removeAll()
                 // 接続後の第三者招待や古い広告の取り込みを防ぎ、電波利用も減らす。
                 self.browser.stopBrowsingForPeers()
                 self.advertiser.stopAdvertisingPeer()
@@ -562,20 +623,28 @@ extension MultipeerSession: MCSessionDelegate {
                 let wasConnected = self.connectedPeer == peerID
                 if wasConnected { self.connectedPeer = nil }
                 // 失敗が確定したので、次のリトライで即座に再招待できるようにする
-                self.pendingInvites.removeValue(forKey: peerID)
+                let invitedAt = self.pendingInvites.removeValue(forKey: peerID)
+                // handshake に一度も入らないまま招待がタイムアウトした相手は、終了済み
+                // アプリの古い広告の可能性が高い。しばらく候補から外して次の候補を試す
+                //（即時の拒否は相手が生きている証拠なので除外しない）
+                if !wasConnecting, !wasConnected,
+                   let invitedAt,
+                   Date().timeIntervalSince(invitedAt) >= Self.unansweredInviteThreshold {
+                    self.markInviteFailure(peerID)
+                }
                 if self.session.connectedPeers.isEmpty {
                     self.keepaliveTask?.cancel()
                 }
+                self.clearCandidateIfIdle(peerID)
                 if wasConnecting || wasConnected {
                     self.onPeerDisconnected?(peerID)
                 }
-                // 接続の試行失敗が続くときは MC の内部状態が壊れている可能性があるため作り直す
-                if self.session.connectedPeers.isEmpty {
+                // handshake まで進んだ接続の失敗が続くときは MC の内部状態が壊れている
+                // 可能性があるため作り直す。招待の再試行と候補の切替は retry loop が行う
+                if self.session.connectedPeers.isEmpty, wasConnecting || wasConnected {
                     self.consecutiveFailures += 1
                     if self.consecutiveFailures >= 3 {
                         self.rebuildTransport(reason: "three connection failures")
-                    } else {
-                        self.refreshDiscovery()
                     }
                 }
             @unknown default:
@@ -628,29 +697,57 @@ extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
                 invitationHandler(false, nil)
                 return
             }
-            guard self.lockCandidate(peerID, instanceID: metadata.instanceID, source: "invitation") else {
-                invitationHandler(false, nil)
-                return
-            }
+            // 招待はいま生きているプロセスからしか届かない。発見情報として記録し、
+            // ゴーストと誤判定していた場合は失敗記録を取り消す
+            self.recentInviteFailures.removeValue(forKey: metadata.instanceID)
+            self.recordDiscoveredPeer(peerID, instanceID: metadata.instanceID, source: "invitation")
+
             guard self.connectedPeer == nil, self.session.connectedPeers.isEmpty else {
                 self.log.info("invite reject: already connected peer=\(peerID.displayName, privacy: .public)")
                 invitationHandler(false, nil)
                 return
             }
 
-            let hasOutgoingAttempt = self.pendingInvites[peerID] != nil
-                || self.connectingStartedAt[peerID] != nil
-            if hasOutgoingAttempt, self.isDesignatedLeader(vs: peerID) {
-                // 両側が同時に招待した場合は、displayName が大きい代表側の招待を残す。
-                self.log.info("invite reject: simultaneous attempt、leader側の送信を優先 peer=\(peerID.displayName, privacy: .public)")
-                invitationHandler(false, nil)
-                return
+            let isFresh: (Date?) -> Bool = { startedAt in
+                guard let startedAt else { return false }
+                return Date().timeIntervalSince(startedAt) < Self.connectingTakeoverProtection
             }
-            if hasOutgoingAttempt {
+            if let candidatePeer = self.candidatePeer, candidatePeer != peerID {
+                // 別候補への試行中。handshake が実際に進み始めた直後だけは守り、
+                // 進んでいない（応答しない広告への招待を待っているだけ、または
+                // .connecting のまま停滞している）試行は、いま招待してきた
+                // 生きている相手を優先して乗り換える
+                if isFresh(self.connectingStartedAt[candidatePeer]) {
+                    self.log.info("invite reject: 別候補と handshake 進行中 peer=\(peerID.displayName, privacy: .public) candidate=\(candidatePeer.displayName, privacy: .public)")
+                    invitationHandler(false, nil)
+                    return
+                }
+                if self.candidateInstanceID != metadata.instanceID {
+                    self.markInviteFailure(candidatePeer)
+                }
+                self.log.info("candidate switch: 停滞した試行を破棄して招待を受ける old=\(candidatePeer.displayName, privacy: .public) new=\(peerID.displayName, privacy: .public)")
+            } else {
+                // 同じ相手との同時招待は、displayName が大きい代表側の「生きている」
+                // 送信を優先する。停滞した試行（応答のない招待・進まない .connecting）
+                // は、相手が改めて招待してきた時点で相手側にはもう存在しないので、
+                // 拒否し続けず受諾に切り替える
+                let hasFreshOutgoingAttempt = isFresh(self.pendingInvites[peerID])
+                    || isFresh(self.connectingStartedAt[peerID])
+                if hasFreshOutgoingAttempt, self.isDesignatedLeader(vs: peerID) {
+                    self.log.info("invite reject: simultaneous attempt、leader側の送信を優先 peer=\(peerID.displayName, privacy: .public)")
+                    invitationHandler(false, nil)
+                    return
+                }
+            }
+            if !self.pendingInvites.isEmpty || !self.connectingStartedAt.isEmpty {
+                // 送信側の試行が残った MCSession で受諾すると、遅延した cancel 由来の
+                // callback で確立後の接続まで落ちることがあるため差し替える
                 self.replaceSessionForIncomingInvitation(from: peerID)
                 self.log.info("invite receive: 受諾専用 session へ切替 peer=\(peerID.displayName, privacy: .public)")
             }
 
+            self.candidatePeer = peerID
+            self.candidateInstanceID = metadata.instanceID
             self.connectionAttemptID = UUID()
             self.connectingStartedAt[peerID] = Date()
             self.log.info("invite accept: peer=\(peerID.displayName, privacy: .public) transport=\(self.transportGeneration) attempt=\(self.shortAttemptID, privacy: .public)")
@@ -693,12 +790,8 @@ extension MultipeerSession: MCNearbyServiceBrowserDelegate {
                 self.log.info("foundPeer ignore: self advertisement")
                 return
             }
-            guard self.lockCandidate(peerID, instanceID: instanceID, source: "discovery") else { return }
-            if self.discovered[peerID] == nil {
-                self.discovered[peerID] = DiscoveredPeer(firstSeen: Date(), instanceID: instanceID)
-                self.log.info("foundPeer: peer=\(peerID.displayName, privacy: .public) id=\(String(instanceID.uuidString.prefix(8)), privacy: .public) transport=\(self.transportGeneration)")
-            }
-            self.inviteIfResponsible(peerID, firstSeen: self.discovered[peerID]?.firstSeen ?? Date())
+            self.recordDiscoveredPeer(peerID, instanceID: instanceID, source: "discovery")
+            self.tryInviteNextCandidateIfIdle()
         }
     }
 
