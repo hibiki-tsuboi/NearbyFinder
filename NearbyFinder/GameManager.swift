@@ -19,18 +19,18 @@ final class GameManager: ObservableObject {
     @Published private(set) var outcome: GameOutcome?
     /// 役割決定直後の発表演出を表示中か（hiding の先頭約 2 秒、両端末で出す）
     @Published private(set) var isRevealingRole = false
-    @Published private(set) var hideSecondsRemaining: Int
-    /// 隠す猶予（秒）。ロビーで変更でき、相手と同期して UserDefaults に保存される
-    @Published private(set) var hideDuration: Int
+    @Published private(set) var hideSecondsRemaining = 60
+    /// 隠す猶予（秒）。ロビーで変更でき、相手と同期される（意図的に永続化しない）
+    @Published private(set) var hideDuration = 60
     /// 探索の制限時間（秒）。時間切れは宝役の勝ち
-    @Published private(set) var huntDuration: Int
+    @Published private(set) var huntDuration = 300
     /// このシリーズで自分／相手が取ったラウンド数（ロビーに戻るとリセット）
     @Published private(set) var myRoundWins = 0
     @Published private(set) var peerRoundWins = 0
     @Published private(set) var huntStartDate: Date?
     @Published private(set) var huntDeadline: Date?
     @Published private(set) var finishDate: Date?
-    @Published private(set) var stats = GameStats.load()
+    @Published private(set) var stats = GameStats()
     @Published private(set) var isNewBest = false
     /// 探索中の距離の推移（リザルトの接近グラフ用、1 秒 1 サンプル）
     @Published private(set) var distanceHistory: [DistanceSample] = []
@@ -45,11 +45,6 @@ final class GameManager: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
 
     init() {
-        let savedHide = UserDefaults.standard.integer(forKey: "hideDuration")
-        let savedHunt = UserDefaults.standard.integer(forKey: "huntDuration")
-        hideDuration = savedHide > 0 ? savedHide : 60
-        huntDuration = savedHunt > 0 ? savedHunt : 300
-        hideSecondsRemaining = savedHide > 0 ? savedHide : 60
         // ネストした ObservableObject の変更をビューへ伝搬させる
         nearby.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -103,15 +98,13 @@ final class GameManager: ObservableObject {
         startHiding()
     }
 
-    /// ロビーでの設定変更。相手にも同期し、次回のために保存する
+    /// ロビーでの設定変更。相手にも同期する
     func updateSettings(hideDuration: Int, huntDuration: Int, broadcast: Bool = true) {
         self.hideDuration = hideDuration
         self.huntDuration = huntDuration
         if phase == .lobby {
             hideSecondsRemaining = hideDuration
         }
-        UserDefaults.standard.set(hideDuration, forKey: "hideDuration")
-        UserDefaults.standard.set(huntDuration, forKey: "huntDuration")
         if broadcast {
             nearby.send(.settingsChanged(hideDuration: hideDuration, huntDuration: huntDuration))
         }
@@ -206,7 +199,6 @@ final class GameManager: ObservableObject {
 
         var updated = stats
         isNewBest = updated.record(outcome: outcome, clearSeconds: outcome == .hunterWon ? elapsedSeconds : nil)
-        updated.save()
         stats = updated
 
         // シリーズのラウンド集計（自分の役割が勝ったかで判定するため両端末で一致する）

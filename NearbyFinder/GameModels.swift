@@ -52,26 +52,13 @@ struct DistanceSample: Identifiable, Equatable {
     let distance: Float
 }
 
-/// 端末ローカルに保存する戦績。決着時に両端末がそれぞれ自分の分を更新する。
-struct GameStats: Codable, Equatable {
+/// 起動中だけメモリ上で保持する戦績。決着時に両端末がそれぞれ自分の分を更新する。
+/// 意図的に永続化しない: UserDefaults 等の「必須理由 API」を使わないことで
+/// プライバシーマニフェスト不要・端末保存データゼロのアプリにしている。
+struct GameStats: Equatable {
     var hunterWins = 0
     var treasureWins = 0
     var bestClearSeconds: Int?
-
-    private static let key = "gameStats"
-
-    static func load() -> GameStats {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let stats = try? JSONDecoder().decode(GameStats.self, from: data) else {
-            return GameStats()
-        }
-        return stats
-    }
-
-    func save() {
-        guard let data = try? JSONEncoder().encode(self) else { return }
-        UserDefaults.standard.set(data, forKey: Self.key)
-    }
 
     /// 戦績を反映し、ベストタイム更新なら true を返す
     mutating func record(outcome: GameOutcome, clearSeconds: Int?) -> Bool {

@@ -354,7 +354,7 @@ struct LobbyView: View {
 
 // MARK: - ゲーム設定
 
-/// 隠す時間・制限時間の設定。UserDefaults に保存され、相手端末にも同期される
+/// 隠す時間・制限時間の設定。相手端末にも同期される（端末には保存しない）
 struct GameSettingsSection: View {
     @ObservedObject var game: GameManager
 
