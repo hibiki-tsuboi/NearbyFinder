@@ -40,6 +40,8 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var directionHint: String?
     /// ARKit ワールド座標系での相手の推定位置（camera assistance 収束後に得られる）。AR 演出用
     @Published private(set) var peerWorldTransform: simd_float4x4?
+    /// AR 演出（ARTreasureView）が使えるか。NI と共有する ARSession が動いているときだけ true
+    @Published private(set) var isARDisplayAvailable = false
 
     /// discoveryToken 以外のゲームメッセージを上位層（GameManager）へ渡す
     var onGameMessage: ((GameMessage) -> Void)?
@@ -69,6 +71,11 @@ final class NearbySessionManager: NSObject, ObservableObject {
     private let log = Logger(subsystem: "jp.hibiki.NearbyFinder", category: "nearby")
     /// ARKit 連携（camera assistance）で方向の精度と取得率を上げる。カメラ拒否時は false に落とす
     private var useCameraAssistance = NISession.deviceCapabilities.supportsCameraAssistance
+    /// AR 演出のために自前の ARSession を NI と共有するか。共有が原因で NI セッションが
+    /// 無効化される場合は false に落とし、NI 内部の ARSession（実績のある構成）で続行する
+    private var useSharedARSession = NISession.deviceCapabilities.supportsCameraAssistance
+    /// 共有 ARSession 使用中に NI セッションが無効化された回数（フォールバック判定用）
+    private var sharedARInvalidationCount = 0
 
     /// 自分のペアの Apple Watch との橋渡し
     private let watchRelay = PhoneWatchRelay()
@@ -94,12 +101,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
             return
         }
         isStarted = true
-        log.info("start: lowPower=\(ProcessInfo.processInfo.isLowPowerModeEnabled) cameraAssistance=\(self.useCameraAssistance)")
-        if useCameraAssistance {
-            // 自前の ARSession を NI と共有すると、worldTransform(for:) の座標系で
-            // AR コンテンツを描画できる
-            arSession.run(ARWorldTrackingConfiguration())
-        }
+        log.info("start: lowPower=\(ProcessInfo.processInfo.isLowPowerModeEnabled) cameraAssistance=\(self.useCameraAssistance) sharedAR=\(self.useSharedARSession)")
         configureMultipeerHandlers()
         startNISession()
         multipeer.start()
@@ -135,6 +137,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
         watchPeerSession?.invalidate()
         watchPeerSession = nil
         arSession.pause()
+        isARDisplayAvailable = false
         isPeerConnected = false
         peerName = nil
         distance = nil
@@ -192,10 +195,18 @@ final class NearbySessionManager: NSObject, ObservableObject {
     private func startNISession() {
         let session = NISession()
         session.delegate = self
-        if useCameraAssistance {
-            // 設定を run する前に呼ぶ必要がある
+        if useCameraAssistance, useSharedARSession {
+            // AR 演出（worldTransform）用に自前の ARSession を NI と共有する。
+            // NI が camera assistance に必要なカメラ設定を注入できるよう、必ず
+            // setARSession → run の順で行うこと。先に run した ARSession を渡す
+            // 順序だと実機では NI セッションが機能せず、MC は繋がるのにトークン
+            // 交換が完了しない「接続中のまま」になる（シミュレータの NI は
+            // AR 連携を無視するため再現しない。8ac698b で入ったデグレ）。
+            arSession.pause()
             session.setARSession(arSession)
+            arSession.run(ARWorldTrackingConfiguration())
         }
+        isARDisplayAvailable = useCameraAssistance && useSharedARSession
         niSession = session
         localTokenSessionID = UUID()
         didReceiveAckForLocalToken = false
@@ -609,13 +620,27 @@ extension NearbySessionManager: NISessionDelegate {
                 self.note = "設定 > プライバシーとセキュリティ > Nearby Interaction から許可してください"
                 return
             }
+            if self.useCameraAssistance, self.useSharedARSession {
+                self.sharedARInvalidationCount += 1
+            }
             // カメラ拒否で camera assistance が失敗した場合は、補助なしに切り替えて再開する
             let cameraAuth = AVCaptureDevice.authorizationStatus(for: .video)
             if self.useCameraAssistance, cameraAuth == .denied || cameraAuth == .restricted {
                 self.useCameraAssistance = false
+                self.useSharedARSession = false
                 self.arSession.pause()
                 self.peerWorldTransform = nil
                 self.note = "カメラが許可されていないため、方向補助なしで続行します"
+            } else if self.useCameraAssistance, self.useSharedARSession,
+                      (error as? NIError)?.code == .invalidARConfiguration || self.sharedARInvalidationCount >= 2 {
+                // 共有 ARSession が原因で NI が動けない端末・OS への保険。共有をやめ、
+                // NI 内部の ARSession（camera assistance は維持）で接続と方向表示を
+                // 優先する。AR 演出だけが無効になる
+                self.useSharedARSession = false
+                self.arSession.pause()
+                self.peerWorldTransform = nil
+                self.log.warning("didInvalidate: 共有 ARSession を停止して NI 内部の camera assistance に切替")
+                self.note = "AR 表示を使わずに続行します"
             } else {
                 self.note = "セッションを再起動しています…（\(error.localizedDescription)）"
             }
@@ -655,6 +680,7 @@ final class NearbySessionManager: NSObject, ObservableObject {
     @Published private(set) var note: String?
     @Published private(set) var directionHint: String?
     @Published private(set) var peerWorldTransform: simd_float4x4?
+    @Published private(set) var isARDisplayAvailable = false
 
     var onGameMessage: ((GameMessage) -> Void)?
     var onConnected: ((_ isLeader: Bool) -> Void)?

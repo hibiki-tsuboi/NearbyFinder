@@ -30,7 +30,7 @@ struct HuntingView: View {
     var body: some View {
         ZStack {
             #if os(iOS)
-            if showAR {
+            if showAR, game.nearby.isARDisplayAvailable {
                 ARTreasureView(arSession: game.nearby.arSession, peerTransform: game.nearby.peerWorldTransform)
                     .ignoresSafeArea()
                 arHUD
@@ -175,18 +175,20 @@ struct HuntingView: View {
             }
             Spacer()
             #if os(iOS)
-            Button {
-                showAR = true
-            } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "arkit")
-                        .font(.title)
-                    Text("ARで見る")
-                        .font(.caption2)
+            if game.nearby.isARDisplayAvailable {
+                Button {
+                    showAR = true
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: "arkit")
+                            .font(.title)
+                        Text("ARで見る")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(12)
+                    .background(.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
                 }
-                .foregroundStyle(.white)
-                .padding(12)
-                .background(.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
             }
             #endif
         }
