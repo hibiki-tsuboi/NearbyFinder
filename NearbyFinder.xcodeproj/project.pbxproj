@@ -347,7 +347,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Treasure Radar";
+				INFOPLIST_KEY_CFBundleDisplayName = "T-Radar";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.family-games";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -393,7 +393,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Treasure Radar";
+				INFOPLIST_KEY_CFBundleDisplayName = "T-Radar";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.family-games";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -434,7 +434,7 @@
 				DEVELOPMENT_TEAM = AK92W9FN2D;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Treasure Radar";
+				INFOPLIST_KEY_CFBundleDisplayName = "T-Radar";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "宝の iPhone までの距離を測るために使用します。";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKApplication = YES;
@@ -466,7 +466,7 @@
 				DEVELOPMENT_TEAM = AK92W9FN2D;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Treasure Radar";
+				INFOPLIST_KEY_CFBundleDisplayName = "T-Radar";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "宝の iPhone までの距離を測るために使用します。";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKApplication = YES;
