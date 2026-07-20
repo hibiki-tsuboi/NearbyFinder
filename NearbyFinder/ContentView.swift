@@ -97,7 +97,7 @@ struct TitleView: View {
                 Text("Treasure Radar")
                     .font(.system(size: 40, weight: .black, design: .rounded))
                     .foregroundStyle(.white)
-                Text("iPhone かくれんぼ")
+                Text("2台で遊ぶ かくれんぼ宝探し")
                     .font(.headline)
                     .foregroundStyle(.white.opacity(0.7))
                 if hasStats {
@@ -245,7 +245,7 @@ struct LobbyView: View {
                 .foregroundStyle(.tint)
             Text("Treasure Radar")
                 .font(.largeTitle.bold())
-            Text("iPhone かくれんぼ")
+            Text("2台で遊ぶ かくれんぼ宝探し")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             statusRow
